@@ -1,0 +1,1091 @@
+-- ==============================================================================
+-- COMPLETE DATABASE SETUP SCRIPT FOR VASU CRACKERS (SUPABASE POSTGRESQL 15)
+-- Source: public/products.csv (Complete 216-Product Vasu Crackers Catalog & 29 Categories)
+-- Includes:
+--   1. Extensions (uuid-ossp, pg_trgm, pgcrypto)
+--   2. Custom Enums (order_status, movement_type)
+--   3. All 12 Tables (store_settings, categories, products, inventory, inventory_movements,
+--                    combos, combo_items, delivery_zones, orders, order_items, bills, bill_items)
+--   4. Sequences & Stored Procedures (order_seq, next_order_number, reserve_order_inventory, bill_seq, next_bill_number)
+--   5. High-Speed Trigram & Query Indexes
+--   6. Full Row Level Security (RLS) Policies (Public Checkout, Admin Management & POS Billing)
+--   7. Supabase Realtime Publication for Live Admin Sound & Order Alerts
+--   8. Storage Bucket 'product-images' Setup & Object Policies
+--   9. Admin User Auth Provisioning (vasusivakasis@gmail.com)
+--  10. Complete Seed Data: 17 Store Settings (Vasu Crackers, 90% discount), 2 Delivery Zones,
+--                          29 Categories, 216 Products, 216 Inventory Balances, Festival Combos
+--  11. Automatic Selling Price Synchronization Trigger
+-- ==============================================================================
+
+-- ==============================================================================
+-- 1. EXTENSIONS
+-- ==============================================================================
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
+-- ==============================================================================
+-- 2. ENUM TYPES
+-- ==============================================================================
+DO $$ BEGIN
+    CREATE TYPE order_status AS ENUM ('PENDING', 'CONFIRMED', 'PACKING', 'PACKED', 'DISPATCHED', 'DELIVERED', 'CANCELLED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE movement_type AS ENUM ('PURCHASE', 'RESERVATION', 'SALE', 'CANCELLATION', 'DAMAGE', 'ADJUSTMENT');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- ==============================================================================
+-- 3. TABLES DEFINITION
+-- ==============================================================================
+
+-- 3.1 STORE SETTINGS TABLE
+CREATE TABLE IF NOT EXISTS store_settings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    key VARCHAR(100) UNIQUE NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.2 CATEGORIES TABLE
+CREATE TABLE IF NOT EXISTS categories (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,
+    icon_name VARCHAR(100),
+    display_order INT DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.3 PRODUCTS TABLE
+CREATE TABLE IF NOT EXISTS products (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    sku VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    pack_size VARCHAR(100),
+    mrp DECIMAL(10, 2) NOT NULL CHECK (mrp >= 0),
+    selling_price DECIMAL(10, 2) NOT NULL CHECK (selling_price >= 0),
+    image_url TEXT,
+    is_active BOOLEAN DEFAULT true,
+    is_featured BOOLEAN DEFAULT false,
+    is_best_seller BOOLEAN DEFAULT false,
+    sound_level VARCHAR(50) DEFAULT 'Medium',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.4 INVENTORY TABLE
+CREATE TABLE IF NOT EXISTS inventory (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID UNIQUE NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    available_stock INT NOT NULL DEFAULT 0 CHECK (available_stock >= 0),
+    reserved_stock INT NOT NULL DEFAULT 0 CHECK (reserved_stock >= 0),
+    safety_threshold INT NOT NULL DEFAULT 10,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.5 INVENTORY MOVEMENTS AUDIT LOG
+CREATE TABLE IF NOT EXISTS inventory_movements (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    type movement_type NOT NULL,
+    quantity INT NOT NULL,
+    reason TEXT,
+    created_by UUID,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.6 COMBOS & COMBO ITEMS
+CREATE TABLE IF NOT EXISTS combos (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,
+    price DECIMAL(10, 2) NOT NULL CHECK (price >= 0),
+    mrp DECIMAL(10, 2) NOT NULL CHECK (mrp >= 0),
+    image_url TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS combo_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    combo_id UUID NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    quantity INT NOT NULL CHECK (quantity > 0)
+);
+
+-- 3.7 DELIVERY ZONES
+CREATE TABLE IF NOT EXISTS delivery_zones (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    zone_name VARCHAR(100) NOT NULL,
+    state_codes TEXT[] NOT NULL,
+    min_order_amount DECIMAL(10, 2) NOT NULL DEFAULT 3000.00,
+    delivery_fee DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    estimated_days VARCHAR(50) DEFAULT '2-3 Days',
+    is_active BOOLEAN DEFAULT true
+);
+
+-- 3.8 ORDERS & ORDER ITEMS
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    customer_name VARCHAR(255) NOT NULL,
+    customer_mobile VARCHAR(20) NOT NULL,
+    customer_email VARCHAR(255),
+    shipping_address TEXT NOT NULL,
+    city VARCHAR(100) NOT NULL,
+    state VARCHAR(100) NOT NULL,
+    pincode VARCHAR(20) NOT NULL,
+    subtotal DECIMAL(10, 2) NOT NULL,
+    discount_amount DECIMAL(10, 2) DEFAULT 0,
+    delivery_fee DECIMAL(10, 2) DEFAULT 0,
+    grand_total DECIMAL(10, 2) NOT NULL,
+    status order_status DEFAULT 'PENDING',
+    admin_notes TEXT,
+    courier_partner VARCHAR(100),
+    tracking_number VARCHAR(100),
+    estimated_delivery VARCHAR(50),
+    is_paid BOOLEAN DEFAULT false,
+    payment_method VARCHAR(50) DEFAULT 'COD',
+    tags TEXT[] DEFAULT '{}',
+    history JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS order_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+    product_name VARCHAR(255) NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL,
+    quantity INT NOT NULL CHECK (quantity > 0),
+    total_price DECIMAL(10, 2) NOT NULL,
+    mrp DECIMAL(10, 2)
+);
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS mrp DECIMAL(10, 2);
+
+-- 3.9 BILLS & BILL ITEMS (COUNTER BILLING & POS)
+CREATE TABLE IF NOT EXISTS bills (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    bill_number VARCHAR(50) UNIQUE NOT NULL,
+    customer_name VARCHAR(255) NOT NULL,
+    customer_mobile VARCHAR(20) NOT NULL,
+    customer_email VARCHAR(255),
+    shipping_address TEXT NOT NULL DEFAULT 'Direct Warehouse Pickup',
+    city VARCHAR(100) NOT NULL DEFAULT 'Sivakasi',
+    state VARCHAR(100) NOT NULL DEFAULT 'Tamil Nadu',
+    pincode VARCHAR(20) NOT NULL DEFAULT '626123',
+    subtotal DECIMAL(10, 2) NOT NULL,
+    discount_amount DECIMAL(10, 2) DEFAULT 0,
+    delivery_fee DECIMAL(10, 2) DEFAULT 0,
+    grand_total DECIMAL(10, 2) NOT NULL,
+    payment_method VARCHAR(50) DEFAULT 'CASH',
+    is_paid BOOLEAN DEFAULT true,
+    admin_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bill_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    bill_id UUID NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+    product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+    product_name VARCHAR(255) NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL,
+    quantity INT NOT NULL CHECK (quantity > 0),
+    total_price DECIMAL(10, 2) NOT NULL,
+    pack_size VARCHAR(50),
+    mrp DECIMAL(10, 2),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS mrp DECIMAL(10, 2);
+
+-- ==============================================================================
+-- 4. HIGH-SPEED INDEXES
+-- ==============================================================================
+CREATE INDEX IF NOT EXISTS idx_products_search ON products USING gin(name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+CREATE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
+CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_customer_mobile ON orders(customer_mobile);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_city ON orders(city);
+CREATE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number);
+CREATE INDEX IF NOT EXISTS idx_inventory_product ON inventory(product_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_movements(product_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_created ON inventory_movements(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bills_created_at ON bills(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bills_bill_number ON bills(bill_number);
+CREATE INDEX IF NOT EXISTS idx_bills_customer_mobile ON bills(customer_mobile);
+CREATE INDEX IF NOT EXISTS idx_bills_is_paid ON bills(is_paid);
+CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON bill_items(bill_id);
+CREATE INDEX IF NOT EXISTS idx_bill_items_product_id ON bill_items(product_id);
+
+-- ==============================================================================
+-- 5. SEQUENCES & STORED PROCEDURES
+-- ==============================================================================
+CREATE SEQUENCE IF NOT EXISTS order_seq START 1001;
+
+CREATE OR REPLACE FUNCTION next_order_number()
+RETURNS TEXT AS $$
+BEGIN
+  RETURN 'VPP-' || TO_CHAR(NOW(), 'YYYY') || '-' || LPAD(nextval('order_seq')::TEXT, 4, '0');
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE SEQUENCE IF NOT EXISTS bill_seq START 1001;
+
+CREATE OR REPLACE FUNCTION next_bill_number()
+RETURNS TEXT AS $$
+BEGIN
+  RETURN 'BILL-' || TO_CHAR(NOW(), 'YYYY') || '-' || LPAD(nextval('bill_seq')::TEXT, 4, '0');
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION reserve_order_inventory(
+    p_items JSONB
+) RETURNS BOOLEAN AS $$
+DECLARE
+    item RECORD;
+    v_available INT;
+BEGIN
+    FOR item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id UUID, quantity INT)
+    LOOP
+        SELECT available_stock INTO v_available 
+        FROM inventory 
+        WHERE product_id = item.product_id
+        FOR UPDATE;
+
+        IF v_available IS NULL OR v_available < item.quantity THEN
+            RAISE EXCEPTION 'Insufficient stock for product %', item.product_id;
+        END IF;
+
+        UPDATE inventory 
+        SET available_stock = available_stock - item.quantity,
+            reserved_stock = reserved_stock + item.quantity
+        WHERE product_id = item.product_id;
+
+        INSERT INTO inventory_movements (product_id, type, quantity, reason)
+        VALUES (item.product_id, 'RESERVATION', item.quantity, 'Order placement stock reservation');
+    END LOOP;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ==============================================================================
+-- 6. ROW LEVEL SECURITY (RLS) POLICIES
+-- ==============================================================================
+ALTER TABLE store_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE combos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE combo_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_zones ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bill_items ENABLE ROW LEVEL SECURITY;
+
+-- Clean existing policies to prevent conflicts on re-execution
+DROP POLICY IF EXISTS "Public store_settings read" ON store_settings;
+DROP POLICY IF EXISTS "Admin store_settings write" ON store_settings;
+DROP POLICY IF EXISTS "Public categories read" ON categories;
+DROP POLICY IF EXISTS "Admin categories full access" ON categories;
+DROP POLICY IF EXISTS "Public products read" ON products;
+DROP POLICY IF EXISTS "Admin products full access" ON products;
+DROP POLICY IF EXISTS "Public inventory read" ON inventory;
+DROP POLICY IF EXISTS "Admin inventory full access" ON inventory;
+DROP POLICY IF EXISTS "Public inventory_movements read" ON inventory_movements;
+DROP POLICY IF EXISTS "Admin inventory_movements full access" ON inventory_movements;
+DROP POLICY IF EXISTS "Public combos read" ON combos;
+DROP POLICY IF EXISTS "Admin combos full access" ON combos;
+DROP POLICY IF EXISTS "Public combo_items read" ON combo_items;
+DROP POLICY IF EXISTS "Admin combo_items full access" ON combo_items;
+DROP POLICY IF EXISTS "Public delivery_zones read" ON delivery_zones;
+DROP POLICY IF EXISTS "Admin delivery_zones write" ON delivery_zones;
+DROP POLICY IF EXISTS "Public orders insert" ON orders;
+DROP POLICY IF EXISTS "Public orders read own" ON orders;
+DROP POLICY IF EXISTS "Admin orders full access" ON orders;
+DROP POLICY IF EXISTS "Public order_items insert" ON order_items;
+DROP POLICY IF EXISTS "Public order_items read" ON order_items;
+DROP POLICY IF EXISTS "Admin order_items full access" ON order_items;
+DROP POLICY IF EXISTS "Allow read bills" ON bills;
+DROP POLICY IF EXISTS "Allow insert bills" ON bills;
+DROP POLICY IF EXISTS "Allow update bills" ON bills;
+DROP POLICY IF EXISTS "Allow delete bills" ON bills;
+DROP POLICY IF EXISTS "Allow read bill_items" ON bill_items;
+DROP POLICY IF EXISTS "Allow insert bill_items" ON bill_items;
+DROP POLICY IF EXISTS "Allow update bill_items" ON bill_items;
+DROP POLICY IF EXISTS "Allow delete bill_items" ON bill_items;
+
+-- Storefront Public Read Policies
+CREATE POLICY "Public store_settings read" ON store_settings FOR SELECT USING (true);
+CREATE POLICY "Public categories read" ON categories FOR SELECT USING (is_active = true);
+CREATE POLICY "Public products read" ON products FOR SELECT USING (is_active = true);
+CREATE POLICY "Public inventory read" ON inventory FOR SELECT USING (true);
+CREATE POLICY "Public inventory_movements read" ON inventory_movements FOR SELECT USING (true);
+CREATE POLICY "Public combos read" ON combos FOR SELECT USING (is_active = true);
+CREATE POLICY "Public combo_items read" ON combo_items FOR SELECT USING (true);
+CREATE POLICY "Public delivery_zones read" ON delivery_zones FOR SELECT USING (true);
+
+-- Checkout Public Order Placement Policies
+CREATE POLICY "Public orders insert" ON orders FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public orders read own" ON orders FOR SELECT USING (true);
+CREATE POLICY "Public order_items insert" ON order_items FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public order_items read" ON order_items FOR SELECT USING (true);
+
+-- Authenticated Admin Management Policies
+CREATE POLICY "Admin store_settings write" ON store_settings FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin categories full access" ON categories FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin products full access" ON products FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin inventory full access" ON inventory FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin inventory_movements full access" ON inventory_movements FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin combos full access" ON combos FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin combo_items full access" ON combo_items FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin delivery_zones write" ON delivery_zones FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin orders full access" ON orders FOR ALL USING (auth.role() = 'authenticated');
+CREATE POLICY "Admin order_items full access" ON order_items FOR ALL USING (auth.role() = 'authenticated');
+
+-- POS Counter Billing Policies
+CREATE POLICY "Allow read bills" ON bills FOR SELECT USING (true);
+CREATE POLICY "Allow insert bills" ON bills FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow update bills" ON bills FOR UPDATE USING (true);
+CREATE POLICY "Allow delete bills" ON bills FOR DELETE USING (true);
+
+CREATE POLICY "Allow read bill_items" ON bill_items FOR SELECT USING (true);
+CREATE POLICY "Allow insert bill_items" ON bill_items FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow update bill_items" ON bill_items FOR UPDATE USING (true);
+CREATE POLICY "Allow delete bill_items" ON bill_items FOR DELETE USING (true);
+
+-- ==============================================================================
+-- 7. SUPABASE REALTIME REPLICATION PUBLICATION
+-- ==============================================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'orders'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE orders;
+  END IF;
+EXCEPTION
+  WHEN undefined_object THEN null;
+END $$;
+
+ALTER TABLE orders REPLICA IDENTITY FULL;
+
+-- ==============================================================================
+-- 8. STORAGE BUCKET FOR PRODUCT IMAGES
+-- ==============================================================================
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'product-images',
+  'product-images',
+  true,
+  10485760, -- 10MB limit per image
+  ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic']
+)
+ON CONFLICT (id) DO UPDATE 
+SET public = true, file_size_limit = 10485760;
+
+DROP POLICY IF EXISTS "Allow public reads from product-images" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public uploads to product-images" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public updates to product-images" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public deletes from product-images" ON storage.objects;
+
+CREATE POLICY "Allow public reads from product-images"
+ON storage.objects FOR SELECT
+TO public
+USING (bucket_id = 'product-images');
+
+CREATE POLICY "Allow public uploads to product-images"
+ON storage.objects FOR INSERT
+TO public
+WITH CHECK (bucket_id = 'product-images');
+
+CREATE POLICY "Allow public updates to product-images"
+ON storage.objects FOR UPDATE
+TO public
+USING (bucket_id = 'product-images');
+
+CREATE POLICY "Allow public deletes from product-images"
+ON storage.objects FOR DELETE
+TO public
+USING (bucket_id = 'product-images');
+
+-- ==============================================================================
+-- 9. ADMIN USER AUTH SETUP (vasusivakasis@gmail.com)
+-- ==============================================================================
+DO $$
+DECLARE
+  new_user_id UUID := gen_random_uuid();
+  user_email TEXT := 'vasusivakasis@gmail.com';
+  raw_password TEXT := 'Admin@VasuCrackers!';   
+  hashed_password TEXT;
+BEGIN
+  -- Generate bcrypt hash using pgcrypto extension
+  hashed_password := extensions.crypt(raw_password, extensions.gen_salt('bf', 10));
+
+  -- Clean up previous record if partially registered
+  DELETE FROM auth.identities WHERE identity_data->>'email' = user_email OR provider_id = user_email;
+  DELETE FROM auth.users WHERE email = user_email;
+
+  -- Create authenticated admin user
+  INSERT INTO auth.users (
+    instance_id,
+    id,
+    aud,
+    role,
+    email,
+    encrypted_password,
+    email_confirmed_at,
+    raw_app_meta_data,
+    raw_user_meta_data,
+    created_at,
+    updated_at,
+    confirmation_token,
+    email_change,
+    email_change_token_new,
+    recovery_token
+  ) VALUES (
+    '00000000-0000-0000-0000-000000000000',
+    new_user_id,
+    'authenticated',
+    'authenticated',
+    user_email,
+    hashed_password,
+    NOW(),
+    '{"provider": "email", "providers": ["email"]}'::jsonb,
+    '{"full_name": "Vasu Crackers Admin", "role": "admin"}'::jsonb,
+    NOW(),
+    NOW(),
+    '',
+    '',
+    '',
+    ''
+  );
+
+  INSERT INTO auth.identities (
+    id,
+    user_id,
+    identity_data,
+    provider,
+    provider_id,
+    last_sign_in_at,
+    created_at,
+    updated_at
+  ) VALUES (
+    gen_random_uuid(),
+    new_user_id,
+    format('{"sub":"%s","email":"%s"}', new_user_id, user_email)::jsonb,
+    'email',
+    user_email,
+    NOW(),
+    NOW(),
+    NOW()
+  );
+
+  RAISE NOTICE 'Admin user % created successfully with ID %', user_email, new_user_id;
+END $$;
+
+-- ==============================================================================
+-- 10. CATALOG & STORE DATA SEEDING
+-- ==============================================================================
+
+-- 10.1 CLEAN EXISTING CATALOG & TRANSACTIONAL DATA (RE-RUNNABLE SEED)
+TRUNCATE TABLE 
+  bill_items,
+  bills,
+  order_items, 
+  orders, 
+  combo_items, 
+  combos, 
+  inventory_movements, 
+  inventory, 
+  products, 
+  categories,
+  delivery_zones 
+CASCADE;
+
+-- 10.2 SEED STORE SETTINGS FOR VASU CRACKERS
+INSERT INTO store_settings (key, value) VALUES
+  ('store_name', 'Vasu Crackers'),
+  ('tagline', 'Vasu Crackers Sivakasi Direct Fireworks Outlet'),
+  ('helpline_mobile', ''),
+  ('whatsapp_number', ''),
+  ('gstin', ''),
+  ('announcement_banner', '⚡ DIWALI PRE-BOOKING OPEN: Get up to 90% OFF Factory Direct Rates!'),
+  ('discount_percentage', '90'),
+  ('store_address', ''),
+  ('max_order_limit_enabled', 'false'),
+  ('max_order_limit_amount', '50000'),
+  ('min_order_tamil_nadu', '3000'),
+  ('min_order_other_states', '5000'),
+  ('state_min_order_overrides', '{}'),
+  ('hero_banner_enabled', 'false'),
+  ('hero_banner_image_url', ''),
+  ('hero_banner_link_url', '#catalog'),
+  ('logo_url', '/Vasu Crackers Firework Emblem.png')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
+-- 10.3 SEED REGIONAL DELIVERY ZONES
+INSERT INTO delivery_zones (id, zone_name, state_codes, min_order_amount, delivery_fee, estimated_days) VALUES 
+  ('55555555-0000-0000-0000-000000000001', 'South India (Tamil Nadu, Kerala, Karnataka, AP, Telangana, Puducherry)', ARRAY['TN', 'Tamil Nadu', 'PY', 'KL', 'KA', 'AP', 'TS', 'Puducherry', 'Kerala', 'Karnataka', 'Andhra Pradesh', 'Telangana'], 3000.00, 150.00, '2-4 Days'),
+  ('55555555-0000-0000-0000-000000000002', 'Rest of India', ARRAY['MH', 'DL', 'GJ', 'RJ', 'UP', 'WB', 'MP', 'HR', 'PB', 'ALL'], 5000.00, 250.00, '4-7 Days')
+ON CONFLICT (id) DO UPDATE SET
+  zone_name = EXCLUDED.zone_name,
+  state_codes = EXCLUDED.state_codes,
+  min_order_amount = EXCLUDED.min_order_amount,
+  delivery_fee = EXCLUDED.delivery_fee,
+  estimated_days = EXCLUDED.estimated_days;
+
+-- 10.4 SEED 29 OFFICIAL VASU CRACKERS CATEGORIES (FROM public/products.csv)
+INSERT INTO categories (id, name, slug, description, icon_name, display_order, is_active) VALUES
+  ('11111111-0000-0000-0000-000000000001', 'SPARKLERS', 'sparklers', 'Child-Safe Electric, Color & Mega Sparklers', 'Sparkles', 1, true),
+  ('11111111-0000-0000-0000-000000000002', 'ROTATION SPARKLERS', 'rotation-sparklers', 'Dazzling Whirling & Rotating Umbrella Sparklers', 'RotateCw', 2, true),
+  ('11111111-0000-0000-0000-000000000003', 'ONE SOUND CRACKERS', 'one-sound-crackers', 'Traditional Single Sound Lakshmi & Kuruvi Crackers', 'Volume2', 3, true),
+  ('11111111-0000-0000-0000-000000000004', 'BIJILI CRACKERS', 'bijili-crackers', 'High Energy Red & Stripped Bijili String Crackers', 'Zap', 4, true),
+  ('11111111-0000-0000-0000-000000000005', 'GROUND CHAKKARS', 'ground-chakkars', 'High Speed Spinning Ground Chakkaras & Wheels', 'RotateCw', 5, true),
+  ('11111111-0000-0000-0000-000000000006', 'FLOWER POTS', 'flower-pots', 'Brilliant Sparkling Flower Pots & Colour Koti Fountains', 'Flame', 6, true),
+  ('11111111-0000-0000-0000-000000000007', 'TWINKLING STARS', 'twinkling-stars', 'Bright Twinkling Stars & Twinkle Pencils', 'Sparkles', 7, true),
+  ('11111111-0000-0000-0000-000000000008', 'TRICOLOUR POTS', 'tricolour-pots', 'Vibrant Tricolour Pots & Multi-Stage Fountains', 'Flame', 8, true),
+  ('11111111-0000-0000-0000-000000000009', 'BOMBS', 'bombs', 'High Intensity Hydro, Classic & Paper Bombs', 'Bomb', 9, true),
+  ('11111111-0000-0000-0000-000000000010', 'SOUND CRACKERS', 'sound-crackers', 'Mega Digital Lar Garlands & Sound Crackers', 'Volume2', 10, true),
+  ('11111111-0000-0000-0000-000000000011', 'CANDLES & FANCY CANDLES', 'candles-fancy-candles', 'Water Falls Pencils, Selfie Sticks & Rainbow Smoke', 'Pencil', 11, true),
+  ('11111111-0000-0000-0000-000000000012', 'ROCKETS', 'rockets', 'High Flying Whistling & Bomb Sky Rockets', 'Rocket', 12, true),
+  ('11111111-0000-0000-0000-000000000013', 'PEACOCK FOUNTAIN', 'peacock-fountain', 'Majestic Magical & Wowstar Bada Peacock Fountains', 'Sparkles', 13, true),
+  ('11111111-0000-0000-0000-000000000014', 'TOYS & SPRINKLERS', 'toys-sprinklers', 'Magic Pops, Electric Stones & Kitkat Novelties', 'Gift', 14, true),
+  ('11111111-0000-0000-0000-000000000015', 'CURRENCY BOMBS', 'currency-bombs', 'Money in the Bank & Cylinder Sound Bombs', 'Bomb', 15, true),
+  ('11111111-0000-0000-0000-000000000016', 'MUSIC FOUNTAIN', 'music-fountain', 'Whistling Music Sirens & Harmonic Fountains', 'Sparkles', 16, true),
+  ('11111111-0000-0000-0000-000000000017', 'KIDS SPECIAL FOUNTAIN', 'kids-special-fountain', 'Fun & Safe Character Fountains for Kids', 'Gift', 17, true),
+  ('11111111-0000-0000-0000-000000000018', 'KIDS SPECIAL FANCY NOVELTOES', 'kids-special-fancy-noveltoes', 'Exciting Novelty Crackers & Interactive Pops', 'Gift', 18, true),
+  ('11111111-0000-0000-0000-000000000019', 'DOUBLE FUNCTION FOUNTAIN', 'double-function-fountain', 'Dual Effect Fountains & Multi-Stage Sparkling Displays', 'Sparkles', 19, true),
+  ('11111111-0000-0000-0000-000000000020', 'THREE STEP FOUNTAIN', 'three-step-fountain', 'Three-Stage Color Changing Step Fountains', 'Sparkles', 20, true),
+  ('11111111-0000-0000-0000-000000000021', 'MEGA NIGHT AERIAL FANCY PIPE', 'mega-night-aerial-fancy-pipe', 'Spectacular Night Aerial Pipes & Single Shot Mortars', 'Moon', 21, true),
+  ('11111111-0000-0000-0000-000000000022', 'WOW STAR SPECIAL COLOUR FANCY', 'wow-star-special-colour-fancy', 'Multi-Colour Wow Star Sky Bursts & Aerial Fancies', 'Star', 22, true),
+  ('11111111-0000-0000-0000-000000000023', 'AERIAL REPEATING SHOTS', 'aerial-repeating-shots', 'Continuous High Flying Repeating Aerial Shots', 'Sparkles', 23, true),
+  ('11111111-0000-0000-0000-000000000024', 'FESTIVAL AERIAL SHOTS', 'festival-aerial-shots', 'Grand Multi-Shot Aerial Cakes for Grand Celebrations', 'Sparkles', 24, true),
+  ('11111111-0000-0000-0000-000000000025', 'FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS)', 'fantastic-aerial-shots-special-effects', 'Special Effect Aerial Cakes & Whistling Multi-Shots', 'Sparkles', 25, true),
+  ('11111111-0000-0000-0000-000000000026', 'NEW ARRIVAL-2026', 'new-arrival-2026', 'Latest 2026 Exclusive Fireworks & Innovative Novelties', 'Star', 26, true),
+  ('11111111-0000-0000-0000-000000000027', 'COLOUR MATCHES /ROLL CAPS', 'colour-matches-roll-caps', 'Child-Safe Colour Matches & Toy Roll Caps', 'Package', 27, true),
+  ('11111111-0000-0000-0000-000000000028', 'GIFT BOXES', 'gift-boxes', 'Grand Family Celebration & Kids Festival Assorted Gift Boxes', 'Gift', 28, true),
+  ('11111111-0000-0000-0000-000000000029', 'FESTIVAL COMBO PACK (NET RATE-NO DISCOUNT)', 'festival-combo-pack-net-rate-no-discount', 'Curated Value Combo Packs with Complete Celebration Varieties', 'Package', 29, true);
+
+-- 10.5 SEED COMPLETE 216-PRODUCT OFFICIAL CATALOG (FROM public/products.csv)
+INSERT INTO products (id, category_id, name, slug, sku, description, pack_size, mrp, selling_price, image_url, is_active, is_featured, is_best_seller, sound_level) VALUES
+  ('22222222-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001', '7 CM ELECTRIC SPARKLERS', '7-cm-electric-sparklers-1', '1', 'High quality 7 CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 80.00, 8.00, NULL, true, true, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000002', '11111111-0000-0000-0000-000000000001', '7 CM COLOUR SPARKLERS', '7-cm-colour-sparklers-2', '2', 'High quality 7 CM COLOUR SPARKLERS from SPARKLERS category.', '1 BOX', 100.00, 10.00, NULL, true, true, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000003', '11111111-0000-0000-0000-000000000001', '7 CM GREEN', '7-cm-green-3', '3', 'High quality 7 CM GREEN from SPARKLERS category.', '1 BOX', 120.00, 12.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000004', '11111111-0000-0000-0000-000000000001', '7 CM RED', '7-cm-red-4', '4', 'High quality 7 CM RED from SPARKLERS category.', '1 BOX', 140.00, 14.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000005', '11111111-0000-0000-0000-000000000001', '10 CM ELECTRIC SPARKLERS', '10-cm-electric-sparklers-5', '5', 'High quality 10 CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 150.00, 15.00, NULL, true, true, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000006', '11111111-0000-0000-0000-000000000001', '10 CM ELECTRIC SPARKLERS', '10-cm-electric-sparklers-6', '6', 'High quality 10 CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 170.00, 17.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000007', '11111111-0000-0000-0000-000000000001', '10CM GREEN SPARKLERS', '10cm-green-sparklers-7', '7', 'High quality 10CM GREEN SPARKLERS from SPARKLERS category.', '1 BOX', 190.00, 19.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000008', '11111111-0000-0000-0000-000000000001', '10 CM RED SPARKLERS', '10-cm-red-sparklers-8', '8', 'High quality 10 CM RED SPARKLERS from SPARKLERS category.', '1 BOX', 210.00, 21.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000009', '11111111-0000-0000-0000-000000000001', '12 CM ELECTRIC SPARKLERS', '12-cm-electric-sparklers-9', '9', 'High quality 12 CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 220.00, 22.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000010', '11111111-0000-0000-0000-000000000001', '12CM COLOUR SPARKLERS', '12cm-colour-sparklers-10', '10', 'High quality 12CM COLOUR SPARKLERS from SPARKLERS category.', '1 BOX', 240.00, 24.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000011', '11111111-0000-0000-0000-000000000001', '12CM GREEN SPARKLERS', '12cm-green-sparklers-11', '11', 'High quality 12CM GREEN SPARKLERS from SPARKLERS category.', '1 BOX', 260.00, 26.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000012', '11111111-0000-0000-0000-000000000001', '12CM RED SPARKLERS', '12cm-red-sparklers-12', '12', 'High quality 12CM RED SPARKLERS from SPARKLERS category.', '1 BOX', 280.00, 28.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000013', '11111111-0000-0000-0000-000000000001', '15CM ELECTRIC SPARKLERS', '15cm-electric-sparklers-13', '13', 'High quality 15CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 340.00, 34.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000014', '11111111-0000-0000-0000-000000000001', '15CM COLOUR SPARKLERS', '15cm-colour-sparklers-14', '14', 'High quality 15CM COLOUR SPARKLERS from SPARKLERS category.', '1 BOX', 360.00, 36.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000015', '11111111-0000-0000-0000-000000000001', '15CM GREEN SPARKLERS', '15cm-green-sparklers-15', '15', 'High quality 15CM GREEN SPARKLERS from SPARKLERS category.', '1 BOX', 390.00, 39.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000016', '11111111-0000-0000-0000-000000000001', '15CM RED SPARKLERS', '15cm-red-sparklers-16', '16', 'High quality 15CM RED SPARKLERS from SPARKLERS category.', '1 BOX', 420.00, 42.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000017', '11111111-0000-0000-0000-000000000001', '30CM ELECTRIC SPARKLERS', '30cm-electric-sparklers-17', '17', 'High quality 30CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 340.00, 34.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000018', '11111111-0000-0000-0000-000000000001', '30CM COLOUR SPARKLERS', '30cm-colour-sparklers-18', '18', 'High quality 30CM COLOUR SPARKLERS from SPARKLERS category.', '1 BOX', 360.00, 36.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000019', '11111111-0000-0000-0000-000000000001', '30CM GREEN SPARKLERS', '30cm-green-sparklers-19', '19', 'High quality 30CM GREEN SPARKLERS from SPARKLERS category.', '1 BOX', 390.00, 39.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000020', '11111111-0000-0000-0000-000000000001', '30CM RED SPARKLERS', '30cm-red-sparklers-20', '20', 'High quality 30CM RED SPARKLERS from SPARKLERS category.', '1 BOX', 420.00, 42.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000021', '11111111-0000-0000-0000-000000000001', '50CM ELECTRIC SPARKLERS', '50cm-electric-sparklers-21', '21', 'High quality 50CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 1550.00, 155.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000022', '11111111-0000-0000-0000-000000000001', '50CM COLOUR SPARKLERS', '50cm-colour-sparklers-22', '22', 'High quality 50CM COLOUR SPARKLERS from SPARKLERS category.', '1 BOX', 1750.00, 175.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000023', '11111111-0000-0000-0000-000000000001', '75CM ELECTRIC SPARKLERS', '75cm-electric-sparklers-23', '23', 'High quality 75CM ELECTRIC SPARKLERS from SPARKLERS category.', '1 BOX', 1980.00, 198.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000024', '11111111-0000-0000-0000-000000000001', '75CM COLOUR SPARKLERS', '75cm-colour-sparklers-24', '24', 'High quality 75CM COLOUR SPARKLERS from SPARKLERS category.', '1 BOX', 2200.00, 220.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000025', '11111111-0000-0000-0000-000000000002', 'Dancing Umberla', 'dancing-umberla-25', '25', 'High quality Dancing Umberla from ROTATION SPARKLERS category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000026', '11111111-0000-0000-0000-000000000002', '30CM.ROTATION SPARKLERS', '30cmrotation-sparklers-26', '26', 'High quality 30CM.ROTATION SPARKLERS from ROTATION SPARKLERS category.', '1 BOX', 2500.00, 250.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000027', '11111111-0000-0000-0000-000000000003', '2 3/4 KURUVI', '2-34-kuruvi-27', '27', 'High quality 2 3/4 KURUVI from ONE SOUND CRACKERS category.', '1 PKT', 60.00, 6.00, NULL, true, false, true, 'High'),
+  ('22222222-0000-0000-0000-000000000028', '11111111-0000-0000-0000-000000000003', '3 1/2 LAKSHMI', '3-12-lakshmi-28', '28', 'High quality 3 1/2 LAKSHMI from ONE SOUND CRACKERS category.', '1 PKT', 130.00, 13.00, NULL, true, true, true, 'High'),
+  ('22222222-0000-0000-0000-000000000029', '11111111-0000-0000-0000-000000000003', '4 LAKSHMI', '4-lakshmi-29', '29', 'High quality 4 LAKSHMI from ONE SOUND CRACKERS category.', '1 PKT', 170.00, 17.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000030', '11111111-0000-0000-0000-000000000003', '4 Deluxe Lakshmi', '4-deluxe-lakshmi-30', '30', 'High quality 4 Deluxe Lakshmi from ONE SOUND CRACKERS category.', '1 PKT', 300.00, 30.00, NULL, true, true, true, 'High'),
+  ('22222222-0000-0000-0000-000000000031', '11111111-0000-0000-0000-000000000003', '4.5 Gold Lakshmi', '45-gold-lakshmi-31', '31', 'High quality 4.5 Gold Lakshmi from ONE SOUND CRACKERS category.', '1 PKT', 310.00, 31.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000032', '11111111-0000-0000-0000-000000000003', '5 Jallikattu', '5-jallikattu-32', '32', 'High quality 5 Jallikattu from ONE SOUND CRACKERS category.', '1 PKT', 550.00, 55.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000033', '11111111-0000-0000-0000-000000000003', '5 Deluxe Elephant', '5-deluxe-elephant-33', '33', 'High quality 5 Deluxe Elephant from ONE SOUND CRACKERS category.', '1 PKT', 780.00, 78.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000034', '11111111-0000-0000-0000-000000000003', '6 Lion King Target', '6-lion-king-target-34', '34', 'High quality 6 Lion King Target from ONE SOUND CRACKERS category.', '1 PKT', 900.00, 90.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000035', '11111111-0000-0000-0000-000000000003', '6 Mega Digital SOUND', '6-mega-digital-sound-35', '35', 'High quality 6 Mega Digital SOUND from ONE SOUND CRACKERS category.', '1 PKT', 900.00, 90.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000036', '11111111-0000-0000-0000-000000000004', 'RED BIJILI 50PCS', 'red-bijili-50pcs-36', '36', 'High quality RED BIJILI 50PCS from BIJILI CRACKERS category.', '1 Pkt', 180.00, 18.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000037', '11111111-0000-0000-0000-000000000004', 'RED BIJILI CRACKERS 100PCS', 'red-bijili-crackers-100pcs-37', '37', 'High quality RED BIJILI CRACKERS 100PCS from BIJILI CRACKERS category.', '1 Pkt', 350.00, 35.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000038', '11111111-0000-0000-0000-000000000004', 'STRIPPED BIJILI 100PCS', 'stripped-bijili-100pcs-38', '38', 'High quality STRIPPED BIJILI 100PCS from BIJILI CRACKERS category.', '1 Pkt', 400.00, 40.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000039', '11111111-0000-0000-0000-000000000005', 'GROUND CHAKKAR BIG (10pcs)', 'ground-chakkar-big-10pcs-39', '39', 'High quality GROUND CHAKKAR BIG (10pcs) from GROUND CHAKKARS category.', '1 BOX', 350.00, 35.00, NULL, true, true, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000040', '11111111-0000-0000-0000-000000000005', 'GROUND CHAKKAR SPECIAL (10pcs)', 'ground-chakkar-special-10pcs-40', '40', 'High quality GROUND CHAKKAR SPECIAL (10pcs) from GROUND CHAKKARS category.', '1 BOX', 700.00, 70.00, NULL, true, false, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000041', '11111111-0000-0000-0000-000000000005', 'GROUND CHAKKARS DELUXE(10pcs)', 'ground-chakkars-deluxe10pcs-41', '41', 'High quality GROUND CHAKKARS DELUXE(10pcs) from GROUND CHAKKARS category.', '1 BOX', 1300.00, 130.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000042', '11111111-0000-0000-0000-000000000005', 'WHISTLING WHEEL(5pcs)', 'whistling-wheel5pcs-42', '42', 'High quality WHISTLING WHEEL(5pcs) from GROUND CHAKKARS category.', '1 BOX', 1300.00, 130.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000043', '11111111-0000-0000-0000-000000000005', 'LOTTUS WHEEEL(5pis)', 'lottus-wheeel5pis-43', '43', 'High quality LOTTUS WHEEEL(5pis) from GROUND CHAKKARS category.', '1 BOX', 2000.00, 200.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000044', '11111111-0000-0000-0000-000000000005', 'Spinner Special Window (10pcs)', 'spinner-special-window-10pcs-44', '44', 'High quality Spinner Special Window (10pcs) from GROUND CHAKKARS category.', '1 BOX', 1300.00, 130.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000045', '11111111-0000-0000-0000-000000000005', 'Spinner Deluxe Window (10pcs)', 'spinner-deluxe-window-10pcs-45', '45', 'High quality Spinner Deluxe Window (10pcs) from GROUND CHAKKARS category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000070', '11111111-0000-0000-0000-000000000005', 'WIRE CHAKKAR (10pcs)', 'wire-chakkar-10pcs-70', '70', 'High quality WIRE CHAKKAR (10pcs) from GROUND CHAKKARS category.', '1 BOX', 1700.00, 170.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000046', '11111111-0000-0000-0000-000000000006', 'FLOWER POTS BIG', 'flower-pots-big-46', '46', 'High quality FLOWER POTS BIG from FLOWER POTS category.', '1 BOX', 700.00, 70.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000047', '11111111-0000-0000-0000-000000000006', 'FLOWER POTS SPECIAL (10pcs)', 'flower-pots-special-10pcs-47', '47', 'High quality FLOWER POTS SPECIAL (10pcs) from FLOWER POTS category.', '1 BOX', 900.00, 90.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000048', '11111111-0000-0000-0000-000000000006', 'FLOWER POTS ASOKA (10pcs)', 'flower-pots-asoka-10pcs-48', '48', 'High quality FLOWER POTS ASOKA (10pcs) from FLOWER POTS category.', '1 BOX', 1100.00, 110.00, NULL, true, true, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000049', '11111111-0000-0000-0000-000000000006', 'COLOUR KOTI (10pcs)', 'colour-koti-10pcs-49', '49', 'High quality COLOUR KOTI (10pcs) from FLOWER POTS category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000050', '11111111-0000-0000-0000-000000000006', 'COLOUR KOTI XL(10pcs)', 'colour-koti-xl10pcs-50', '50', 'High quality COLOUR KOTI XL(10pcs) from FLOWER POTS category.', '1 BOX', 2000.00, 200.00, NULL, true, false, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000051', '11111111-0000-0000-0000-000000000006', 'COLOUR KOTI SUPER DELUXE (5pcs)', 'colour-koti-super-deluxe-5pcs-51', '51', 'High quality COLOUR KOTI SUPER DELUXE (5pcs) from FLOWER POTS category.', '1 BOX', 1900.00, 190.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000052', '11111111-0000-0000-0000-000000000006', 'COLOUR KOTI SUPER DELUXE (10pcs)', 'colour-koti-super-deluxe-10pcs-52', '52', 'High quality COLOUR KOTI SUPER DELUXE (10pcs) from FLOWER POTS category.', '1 BOX', 3500.00, 350.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000053', '11111111-0000-0000-0000-000000000006', 'COLOUR KOTI JUMBOO DELUXE (10pcs)', 'colour-koti-jumboo-deluxe-10pcs-53', '53', 'High quality COLOUR KOTI JUMBOO DELUXE (10pcs) from FLOWER POTS category.', '1 BOX', 4400.00, 440.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000054', '11111111-0000-0000-0000-000000000006', 'LUCKY(5pcs) (RED&GREEN)', 'lucky5pcs-redgreen-54', '54', 'High quality LUCKY(5pcs) (RED&GREEN) from FLOWER POTS category.', '1 BOX', 1500.00, 150.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000055', '11111111-0000-0000-0000-000000000007', '1 1/2 TWINKLING STAR (10pcs)', '1-12-twinkling-star-10pcs-55', '55', 'High quality 1 1/2 TWINKLING STAR (10pcs) from TWINKLING STARS category.', '1 BOX', 200.00, 20.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000056', '11111111-0000-0000-0000-000000000007', '4 TWINKLING STAR (10pcs)', '4-twinkling-star-10pcs-56', '56', 'High quality 4 TWINKLING STAR (10pcs) from TWINKLING STARS category.', '1 BOX', 600.00, 60.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000057', '11111111-0000-0000-0000-000000000008', 'TRICOLOUR MINI (3pcs)', 'tricolour-mini-3pcs-57', '57', 'High quality TRICOLOUR MINI (3pcs) from TRICOLOUR POTS category.', '1 BOX', 1100.00, 110.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000058', '11111111-0000-0000-0000-000000000008', 'TRICOLOUR (5pcs) RED&GREEN', 'tricolour-5pcs-redgreen-58', '58', 'High quality TRICOLOUR (5pcs) RED&GREEN from TRICOLOUR POTS category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000059', '11111111-0000-0000-0000-000000000008', 'TRICOLOUR DELUXE (5pcs)', 'tricolour-deluxe-5pcs-59', '59', 'High quality TRICOLOUR DELUXE (5pcs) from TRICOLOUR POTS category.', '1 BOX', 2500.00, 250.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000060', '11111111-0000-0000-0000-000000000009', 'SQURE BOMB(10pcs)', 'squre-bomb10pcs-60', '60', 'High quality SQURE BOMB(10pcs) from BOMBS category.', '1 BOX', 500.00, 50.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000061', '11111111-0000-0000-0000-000000000009', '555 BOMBS', '555-bombs-61', '61', 'High quality 555 BOMBS from BOMBS category.', '1 BOX', 600.00, 60.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000062', '11111111-0000-0000-0000-000000000009', 'HYDRO BOMB(10pcs)', 'hydro-bomb10pcs-62', '62', 'High quality HYDRO BOMB(10pcs) from BOMBS category.', '1 BOX', 700.00, 70.00, NULL, true, true, true, 'High'),
+  ('22222222-0000-0000-0000-000000000063', '11111111-0000-0000-0000-000000000009', 'KING BOMB(10pcs)', 'king-bomb10pcs-63', '63', 'High quality KING BOMB(10pcs) from BOMBS category.', '1 BOX', 1100.00, 110.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000064', '11111111-0000-0000-0000-000000000009', 'CLASSIC BOMB (10pcs)', 'classic-bomb-10pcs-64', '64', 'High quality CLASSIC BOMB (10pcs) from BOMBS category.', '1 BOX', 1350.00, 135.00, NULL, true, false, true, 'High'),
+  ('22222222-0000-0000-0000-000000000065', '11111111-0000-0000-0000-000000000009', 'DIGITAL BOMB(10pcs)', 'digital-bomb10pcs-65', '65', 'High quality DIGITAL BOMB(10pcs) from BOMBS category.', '1 BOX', 2500.00, 250.00, NULL, true, true, false, 'High'),
+  ('22222222-0000-0000-0000-000000000066', '11111111-0000-0000-0000-000000000009', 'DRAGULLA BOMB BIG(10pcs)', 'dragulla-bomb-big10pcs-66', '66', 'High quality DRAGULLA BOMB BIG(10pcs) from BOMBS category.', '1 BOX', 2800.00, 280.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000067', '11111111-0000-0000-0000-000000000009', 'paper bomb 1/4kg', 'paper-bomb-14kg-67', '67', 'High quality paper bomb 1/4kg from BOMBS category.', '1 Pkt', 450.00, 45.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000068', '11111111-0000-0000-0000-000000000009', 'paper bomb 1/5kg', 'paper-bomb-15kg-68', '68', 'High quality paper bomb 1/5kg from BOMBS category.', '1 BOX', 900.00, 90.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000069', '11111111-0000-0000-0000-000000000009', 'paper bomb 1kg', 'paper-bomb-1kg-69', '69', 'High quality paper bomb 1kg from BOMBS category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000071', '11111111-0000-0000-0000-000000000010', '90S KIDS DIGITAL LAR(3pcs)', '90s-kids-digital-lar3pcs-71', '71', 'High quality 90S KIDS DIGITAL LAR(3pcs) from SOUND CRACKERS category.', '1 BOX', 1300.00, 130.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000072', '11111111-0000-0000-0000-000000000010', '28 giant Digital Lar', '28-giant-digital-lar-72', '72', 'High quality 28 giant Digital Lar from SOUND CRACKERS category.', '1 Pkt', 300.00, 30.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000073', '11111111-0000-0000-0000-000000000010', '1k STAR', '1k-star-73', '73', 'High quality 1k STAR from SOUND CRACKERS category.', '1 BOX', 1700.00, 170.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000074', '11111111-0000-0000-0000-000000000010', '2K STAR', '2k-star-74', '74', 'High quality 2K STAR from SOUND CRACKERS category.', '1 BOX', 3400.00, 340.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000075', '11111111-0000-0000-0000-000000000010', '5K STAR', '5k-star-75', '75', 'High quality 5K STAR from SOUND CRACKERS category.', '1 BOX', 8500.00, 850.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000076', '11111111-0000-0000-0000-000000000010', '10K STAR', '10k-star-76', '76', 'High quality 10K STAR from SOUND CRACKERS category.', '1 BOX', 17000.00, 1700.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000077', '11111111-0000-0000-0000-000000000011', 'SELFIE STICK(3pcs)', 'selfie-stick3pcs-77', '77', 'High quality SELFIE STICK(3pcs) from CANDLES & FANCY CANDLES category.', '1 BOX', 400.00, 40.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000078', '11111111-0000-0000-0000-000000000011', 'ULDRA PENCIL(3pcs)', 'uldra-pencil3pcs-78', '78', 'High quality ULDRA PENCIL(3pcs) from CANDLES & FANCY CANDLES category.', '1 BOX', 800.00, 80.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000079', '11111111-0000-0000-0000-000000000011', 'WATER FALLS PENCIL BIG', 'water-falls-pencil-big-79', '79', 'High quality WATER FALLS PENCIL BIG from CANDLES & FANCY CANDLES category.', '1 BOX', 1700.00, 170.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000080', '11111111-0000-0000-0000-000000000011', 'AK-47 WATER GUN', 'ak-47-water-gun-80', '80', 'High quality AK-47 WATER GUN from CANDLES & FANCY CANDLES category.', '1 BOX', 2300.00, 230.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000081', '11111111-0000-0000-0000-000000000011', 'FUNKY FISH WATER FALL PENCIAL BIG', 'funky-fish-water-fall-pencial-big-81', '81', 'High quality FUNKY FISH WATER FALL PENCIAL BIG from CANDLES & FANCY CANDLES category.', '1 BOX', 2400.00, 240.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000099', '11111111-0000-0000-0000-000000000011', 'RAINBOW COLOUR SMOKE (3pcs)', 'rainbow-colour-smoke-3pcs-99', '99', 'High quality RAINBOW COLOUR SMOKE (3pcs) from CANDLES & FANCY CANDLES category.', '1 BOX', 1300.00, 130.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000082', '11111111-0000-0000-0000-000000000012', 'ROCKET BOMB (10pcs)', 'rocket-bomb-10pcs-82', '82', 'High quality ROCKET BOMB (10pcs) from ROCKETS category.', '1 BOX', 650.00, 65.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000083', '11111111-0000-0000-0000-000000000012', 'WHISTLING ROCKET (10pcs)', 'whistling-rocket-10pcs-83', '83', 'High quality WHISTLING ROCKET (10pcs) from ROCKETS category.', '1 BOX', 2000.00, 200.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000084', '11111111-0000-0000-0000-000000000012', 'VADIVEL FANCY ROCKET', 'vadivel-fancy-rocket-84', '84', 'High quality VADIVEL FANCY ROCKET from ROCKETS category.', '1 BOX', 3800.00, 380.00, NULL, true, true, true, 'Medium'),
+  ('22222222-0000-0000-0000-000000000085', '11111111-0000-0000-0000-000000000013', 'MEGICAL PEACOCK', 'megical-peacock-85', '85', 'High quality MEGICAL PEACOCK from PEACOCK FOUNTAIN category.', '1 BOX', 1080.00, 108.00, NULL, true, false, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000086', '11111111-0000-0000-0000-000000000013', 'MEGA PEACOCK FOUNTAIN', 'mega-peacock-fountain-86', '86', 'High quality MEGA PEACOCK FOUNTAIN from PEACOCK FOUNTAIN category.', '1 BOX', 1500.00, 150.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000087', '11111111-0000-0000-0000-000000000013', 'BADA PEACOCK FOUNTAIN', 'bada-peacock-fountain-87', '87', 'High quality BADA PEACOCK FOUNTAIN from PEACOCK FOUNTAIN category.', '1 BOX', 3600.00, 360.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000088', '11111111-0000-0000-0000-000000000013', 'WOWSTAR BADA PEACOCK', 'wowstar-bada-peacock-88', '88', 'High quality WOWSTAR BADA PEACOCK from PEACOCK FOUNTAIN category.', '1 BOX', 4500.00, 450.00, NULL, true, false, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000089', '11111111-0000-0000-0000-000000000013', 'PINK BADA PEACOCK WOWSTAR SPECIAL', 'pink-bada-peacock-wowstar-special-89', '89', 'High quality PINK BADA PEACOCK WOWSTAR SPECIAL from PEACOCK FOUNTAIN category.', '1 BOX', 4800.00, 480.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000090', '11111111-0000-0000-0000-000000000014', 'MAGIC POPS', 'magic-pops-90', '90', 'High quality MAGIC POPS from TOYS & SPRINKLERS category.', '1 BOX', 100.00, 10.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000091', '11111111-0000-0000-0000-000000000014', 'ELETRIC STONE', 'eletric-stone-91', '91', 'High quality ELETRIC STONE from TOYS & SPRINKLERS category.', '1 BOX', 120.00, 12.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000092', '11111111-0000-0000-0000-000000000014', 'KITKAT', 'kitkat-92', '92', 'High quality KITKAT from TOYS & SPRINKLERS category.', '1 BOX', 250.00, 25.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000093', '11111111-0000-0000-0000-000000000015', 'MONEY IN THE BANK (3pis)', 'money-in-the-bank-3pis-93', '93', 'High quality MONEY IN THE BANK (3pis) from CURRENCY BOMBS category.', '1 BOX', 1200.00, 120.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000094', '11111111-0000-0000-0000-000000000015', 'MONEY IN THE BANK BIG DELUXE (2pcs)', 'money-in-the-bank-big-deluxe-2pcs-94', '94', 'High quality MONEY IN THE BANK BIG DELUXE (2pcs) from CURRENCY BOMBS category.', '1 BOX', 2400.00, 240.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000095', '11111111-0000-0000-0000-000000000015', 'OLD IS GOLD (30pcs)', 'old-is-gold-30pcs-95', '95', 'High quality OLD IS GOLD (30pcs) from CURRENCY BOMBS category.', '1 BOX', 1500.00, 150.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000096', '11111111-0000-0000-0000-000000000015', 'CYLINDER BOMB 2 IN 1 FUNCTION', 'cylinder-bomb-2-in-1-function-96', '96', 'High quality CYLINDER BOMB 2 IN 1 FUNCTION from CURRENCY BOMBS category.', '1 BOX', 1700.00, 170.00, NULL, true, false, false, 'High'),
+  ('22222222-0000-0000-0000-000000000097', '11111111-0000-0000-0000-000000000016', 'MINI SIREN (5pcs)', 'mini-siren-5pcs-97', '97', 'High quality MINI SIREN (5pcs) from MUSIC FOUNTAIN category.', '1 BOX', 1500.00, 150.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000098', '11111111-0000-0000-0000-000000000016', 'MEGA SIREN (3pcs)', 'mega-siren-3pcs-98', '98', 'High quality MEGA SIREN (3pcs) from MUSIC FOUNTAIN category.', '1 BOX', 2000.00, 200.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000100', '11111111-0000-0000-0000-000000000017', '2 1/2 MINIONS FOUNTAIN (5varieties)', '2-12-minions-fountain-5varieties-100', '100', 'High quality 2 1/2 MINIONS FOUNTAIN (5varieties) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 300.00, 30.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000101', '11111111-0000-0000-0000-000000000017', '4 INCH AVENGERS FOUNTAIN (5varieties)', '4-inch-avengers-fountain-5varieties-101', '101', 'High quality 4 INCH AVENGERS FOUNTAIN (5varieties) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 600.00, 60.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000102', '11111111-0000-0000-0000-000000000017', '4 INCH TIN FOUNTAIN', '4-inch-tin-fountain-102', '102', 'High quality 4 INCH TIN FOUNTAIN from KIDS SPECIAL FOUNTAIN category.', '1 PCS', 800.00, 80.00, NULL, true, false, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000103', '11111111-0000-0000-0000-000000000017', '5IN1 SHOWER (5pcs)', '5in1-shower-5pcs-103', '103', 'High quality 5IN1 SHOWER (5pcs) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 600.00, 60.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000104', '11111111-0000-0000-0000-000000000017', 'SUN LIGHT (5pcs)', 'sun-light-5pcs-104', '104', 'High quality SUN LIGHT (5pcs) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 990.00, 99.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000105', '11111111-0000-0000-0000-000000000017', 'MOON LIGHT(5pcs)', 'moon-light5pcs-105', '105', 'High quality MOON LIGHT(5pcs) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 990.00, 99.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000106', '11111111-0000-0000-0000-000000000017', 'PEACOCK FEATHER DROPS (5pcs)', 'peacock-feather-drops-5pcs-106', '106', 'High quality PEACOCK FEATHER DROPS (5pcs) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 990.00, 99.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000107', '11111111-0000-0000-0000-000000000017', 'GOLDEN DROPS(5pcs)', 'golden-drops5pcs-107', '107', 'High quality GOLDEN DROPS(5pcs) from KIDS SPECIAL FOUNTAIN category.', '1 BOX', 990.00, 99.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000108', '11111111-0000-0000-0000-000000000017', '8 INCH JAMBO TIN FOUNTAIN', '8-inch-jambo-tin-fountain-108', '108', 'High quality 8 INCH JAMBO TIN FOUNTAIN from KIDS SPECIAL FOUNTAIN category.', '1 PCS', 2200.00, 220.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000109', '11111111-0000-0000-0000-000000000018', 'PHOTO FLASH(5pcs)', 'photo-flash5pcs-109', '109', 'High quality PHOTO FLASH(5pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 600.00, 60.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000110', '11111111-0000-0000-0000-000000000018', 'HELICOPTER(5pcs)', 'helicopter5pcs-110', '110', 'High quality HELICOPTER(5pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 800.00, 80.00, NULL, true, false, true, 'Medium'),
+  ('22222222-0000-0000-0000-000000000111', '11111111-0000-0000-0000-000000000018', 'LOLLIPOP (5pcs)', 'lollipop-5pcs-111', '111', 'High quality LOLLIPOP (5pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 1500.00, 150.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000112', '11111111-0000-0000-0000-000000000018', 'WATTER FALLS FOUNTAIN', 'watter-falls-fountain-112', '112', 'High quality WATTER FALLS FOUNTAIN from KIDS SPECIAL FANCY NOVELTOES category.', '1 PCS', 1300.00, 130.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000113', '11111111-0000-0000-0000-000000000018', 'SHOOTER GUN(5pcs)', 'shooter-gun5pcs-113', '113', 'High quality SHOOTER GUN(5pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000114', '11111111-0000-0000-0000-000000000018', 'DRONE (5pcs)', 'drone-5pcs-114', '114', 'High quality DRONE (5pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 1450.00, 145.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000115', '11111111-0000-0000-0000-000000000018', 'JUNGLE SERIES', 'jungle-series-115', '115', 'High quality JUNGLE SERIES from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 1800.00, 180.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000116', '11111111-0000-0000-0000-000000000018', 'BUTTERFLY (10pis)', 'butterfly-10pis-116', '116', 'High quality BUTTERFLY (10pis) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 800.00, 80.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000117', '11111111-0000-0000-0000-000000000018', 'TORCH LIGHT (3pcs)', 'torch-light-3pcs-117', '117', 'High quality TORCH LIGHT (3pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 990.00, 99.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000118', '11111111-0000-0000-0000-000000000018', 'SIZZLING STARS (2pcs)', 'sizzling-stars-2pcs-118', '118', 'High quality SIZZLING STARS (2pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 2400.00, 240.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000119', '11111111-0000-0000-0000-000000000018', 'AMARNATH ROCK STAR', 'amarnath-rock-star-119', '119', 'High quality AMARNATH ROCK STAR from KIDS SPECIAL FANCY NOVELTOES category.', '1 PCS', 990.00, 99.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000120', '11111111-0000-0000-0000-000000000018', 'STAR DROOM', 'star-droom-120', '120', 'High quality STAR DROOM from KIDS SPECIAL FANCY NOVELTOES category.', '1 PCS', 990.00, 99.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000121', '11111111-0000-0000-0000-000000000018', 'ICON WATTER FALLS FOUNTAIN (2pcs)', 'icon-watter-falls-fountain-2pcs-121', '121', 'High quality ICON WATTER FALLS FOUNTAIN (2pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 2000.00, 200.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000122', '11111111-0000-0000-0000-000000000018', 'BAMBARAM(10pcs)', 'bambaram10pcs-122', '122', 'High quality BAMBARAM(10pcs) from KIDS SPECIAL FANCY NOVELTOES category.', '1 BOX', 990.00, 99.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000123', '11111111-0000-0000-0000-000000000018', 'KATHA KIDS WORLD', 'katha-kids-world-123', '123', 'High quality KATHA KIDS WORLD from KIDS SPECIAL FANCY NOVELTOES category.', '1 PCS', 2000.00, 200.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000124', '11111111-0000-0000-0000-000000000019', 'RED BULLS', 'red-bulls-124', '124', 'High quality RED BULLS from DOUBLE FUNCTION FOUNTAIN category.', '1 PCS', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000125', '11111111-0000-0000-0000-000000000019', 'VIOLET FUNTAIN', 'violet-funtain-125', '125', 'High quality VIOLET FUNTAIN from DOUBLE FUNCTION FOUNTAIN category.', '1 PCS', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000126', '11111111-0000-0000-0000-000000000019', 'ZOMBIE MISFITS', 'zombie-misfits-126', '126', 'High quality ZOMBIE MISFITS from DOUBLE FUNCTION FOUNTAIN category.', '1 PCS', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000127', '11111111-0000-0000-0000-000000000019', 'STRING BLUE', 'string-blue-127', '127', 'High quality STRING BLUE from DOUBLE FUNCTION FOUNTAIN category.', '1 PCS', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000128', '11111111-0000-0000-0000-000000000019', '6 INCH BIG BANG DOUBLE FOUNTAIN', '6-inch-big-bang-double-fountain-128', '128', 'High quality 6 INCH BIG BANG DOUBLE FOUNTAIN from DOUBLE FUNCTION FOUNTAIN category.', '1 BOX', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000129', '11111111-0000-0000-0000-000000000019', '6 INCH DOUBLE FOUNTAIN DR.PEPPER', '6-inch-double-fountain-drpepper-129', '129', 'High quality 6 INCH DOUBLE FOUNTAIN DR.PEPPER from DOUBLE FUNCTION FOUNTAIN category.', '1 BOX', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000130', '11111111-0000-0000-0000-000000000019', 'JAZZ MUSIC DOUBLE FUNCTION FOUNTAIN', 'jazz-music-double-function-fountain-130', '130', 'High quality JAZZ MUSIC DOUBLE FUNCTION FOUNTAIN from DOUBLE FUNCTION FOUNTAIN category.', '1 BOX', 1550.00, 155.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000131', '11111111-0000-0000-0000-000000000019', 'KARACKE NIGHT DOUBLE FUNCTION FOUNTAIN', 'karacke-night-double-function-fountain-131', '131', 'High quality KARACKE NIGHT DOUBLE FUNCTION FOUNTAIN from DOUBLE FUNCTION FOUNTAIN category.', '1 BOX', 1550.00, 155.00, NULL, true, true, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000132', '11111111-0000-0000-0000-000000000020', '8 INCH BIG MR.BEEN TRIPLE FOUNTAIN', '8-inch-big-mrbeen-triple-fountain-132', '132', 'High quality 8 INCH BIG MR.BEEN TRIPLE FOUNTAIN from THREE STEP FOUNTAIN category.', '1 BOX', 2600.00, 260.00, NULL, true, false, true, 'Low'),
+  ('22222222-0000-0000-0000-000000000133', '11111111-0000-0000-0000-000000000020', '8 INCH SIZZLING LEGO TRIPLE STEP FOUNTAIN', '8-inch-sizzling-lego-triple-step-fountain-133', '133', 'High quality 8 INCH SIZZLING LEGO TRIPLE STEP FOUNTAIN from THREE STEP FOUNTAIN category.', '1 BOX', 2600.00, 260.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000134', '11111111-0000-0000-0000-000000000020', '8 INCH JP TRIPLE STEP FOUNTAIN', '8-inch-jp-triple-step-fountain-134', '134', 'High quality 8 INCH JP TRIPLE STEP FOUNTAIN from THREE STEP FOUNTAIN category.', '1 BOX', 2600.00, 260.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000135', '11111111-0000-0000-0000-000000000021', '1 INCH PIPE', '1-inch-pipe-135', '135', 'High quality 1 INCH PIPE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 280.00, 28.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000136', '11111111-0000-0000-0000-000000000021', '2 INCH PIPE', '2-inch-pipe-136', '136', 'High quality 2 INCH PIPE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 900.00, 90.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000137', '11111111-0000-0000-0000-000000000021', '2 1/2 INCH PIPE', '2-12-inch-pipe-137', '137', 'High quality 2 1/2 INCH PIPE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 1300.00, 130.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000138', '11111111-0000-0000-0000-000000000021', '3INCH FANCY PIPE', '3inch-fancy-pipe-138', '138', 'High quality 3INCH FANCY PIPE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 2100.00, 210.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000139', '11111111-0000-0000-0000-000000000021', '3INCH FANCY PIPE NAYAGARA FALLS', '3inch-fancy-pipe-nayagara-falls-139', '139', 'High quality 3INCH FANCY PIPE NAYAGARA FALLS from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 2400.00, 240.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000140', '11111111-0000-0000-0000-000000000021', '3 INCH FANCY (2pcs)', '3-inch-fancy-2pcs-140', '140', 'High quality 3 INCH FANCY (2pcs) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 4400.00, 440.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000141', '11111111-0000-0000-0000-000000000021', '3 INCH NAYAGARA FALLS (2pcs)', '3-inch-nayagara-falls-2pcs-141', '141', 'High quality 3 INCH NAYAGARA FALLS (2pcs) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 4800.00, 480.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000142', '11111111-0000-0000-0000-000000000021', '31/2 INCH STALIN PIPE SINGLE', '312-inch-stalin-pipe-single-142', '142', 'High quality 31/2 INCH STALIN PIPE SINGLE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 2600.00, 260.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000143', '11111111-0000-0000-0000-000000000021', '31/2 INCH SINGLE SPECIAL', '312-inch-single-special-143', '143', 'High quality 31/2 INCH SINGLE SPECIAL from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 2900.00, 290.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000144', '11111111-0000-0000-0000-000000000021', '31/2 INCH PIPE SINGLE (NAYAGARA)', '312-inch-pipe-single-nayagara-144', '144', 'High quality 31/2 INCH PIPE SINGLE (NAYAGARA) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 3300.00, 330.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000145', '11111111-0000-0000-0000-000000000021', '4INCH SINGLE FANCY PIPE', '4inch-single-fancy-pipe-145', '145', 'High quality 4INCH SINGLE FANCY PIPE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 3500.00, 350.00, NULL, true, true, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000146', '11111111-0000-0000-0000-000000000021', '4INCH FANCY (NAYAGARA) PIPE', '4inch-fancy-nayagara-pipe-146', '146', 'High quality 4INCH FANCY (NAYAGARA) PIPE from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 3800.00, 380.00, NULL, true, false, true, 'Medium'),
+  ('22222222-0000-0000-0000-000000000147', '11111111-0000-0000-0000-000000000021', '21/2 INCH 3PCS', '212-inch-3pcs-147', '147', 'High quality 21/2 INCH 3PCS from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 2400.00, 240.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000148', '11111111-0000-0000-0000-000000000021', '21/2 INCH 3PCS SPECIAL', '212-inch-3pcs-special-148', '148', 'High quality 21/2 INCH 3PCS SPECIAL from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 2700.00, 270.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000149', '11111111-0000-0000-0000-000000000021', '21/2 INCH 3STEP FANCY (3pcs)', '212-inch-3step-fancy-3pcs-149', '149', 'High quality 21/2 INCH 3STEP FANCY (3pcs) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 3500.00, 350.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000150', '11111111-0000-0000-0000-000000000021', '4INCH JAINARAYANA PIPE (2pcs)', '4inch-jainarayana-pipe-2pcs-150', '150', 'High quality 4INCH JAINARAYANA PIPE (2pcs) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 7600.00, 760.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000151', '11111111-0000-0000-0000-000000000021', '4INCH 7STEP (2pcs) BALAJI BRAND', '4inch-7step-2pcs-balaji-brand-151', '151', 'High quality 4INCH 7STEP (2pcs) BALAJI BRAND from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 7500.00, 750.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000152', '11111111-0000-0000-0000-000000000021', '4INCH 7STEP (SINGLE)', '4inch-7step-single-152', '152', 'High quality 4INCH 7STEP (SINGLE) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 4300.00, 430.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000153', '11111111-0000-0000-0000-000000000021', '4INCH FANCY DOUBLE BALL', '4inch-fancy-double-ball-153', '153', 'High quality 4INCH FANCY DOUBLE BALL from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 4300.00, 430.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000154', '11111111-0000-0000-0000-000000000021', '4INCH 12STEP FANCY', '4inch-12step-fancy-154', '154', 'High quality 4INCH 12STEP FANCY from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 4500.00, 450.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000155', '11111111-0000-0000-0000-000000000021', '4 INCH FANCY PIPE (SINGLE)', '4-inch-fancy-pipe-single-155', '155', 'High quality 4 INCH FANCY PIPE (SINGLE) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 3500.00, 350.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000156', '11111111-0000-0000-0000-000000000021', '4INCH FANCY PIPE SPECIAL (SINGLE)', '4inch-fancy-pipe-special-single-156', '156', 'High quality 4INCH FANCY PIPE SPECIAL (SINGLE) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 PCS', 3800.00, 380.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000157', '11111111-0000-0000-0000-000000000021', '5 INCH SPECIAL FANCY PIPE (SINGLE)', '5-inch-special-fancy-pipe-single-157', '157', 'High quality 5 INCH SPECIAL FANCY PIPE (SINGLE) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 650.00, 65.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000158', '11111111-0000-0000-0000-000000000021', '5 INCH FANCY PIPE NAYAGARA SPECIAL', '5-inch-fancy-pipe-nayagara-special-158', '158', 'High quality 5 INCH FANCY PIPE NAYAGARA SPECIAL from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 6800.00, 680.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000159', '11111111-0000-0000-0000-000000000021', '6 INCH MEGA SPECIAL FANCY (SINGLE)', '6-inch-mega-special-fancy-single-159', '159', 'High quality 6 INCH MEGA SPECIAL FANCY (SINGLE) from MEGA NIGHT AERIAL FANCY PIPE category.', '1 BOX', 17000.00, 1700.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000160', '11111111-0000-0000-0000-000000000022', '4 INCH WOW STAR PINK (SINGLE)', '4-inch-wow-star-pink-single-160', '160', 'High quality 4 INCH WOW STAR PINK (SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 4500.00, 450.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000161', '11111111-0000-0000-0000-000000000022', '4 INCH WOW STAR PURPLE(SINGLE)', '4-inch-wow-star-purplesingle-161', '161', 'High quality 4 INCH WOW STAR PURPLE(SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 4500.00, 450.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000162', '11111111-0000-0000-0000-000000000022', '4 INCH WOW YELLOW (SINGLE)', '4-inch-wow-yellow-single-162', '162', 'High quality 4 INCH WOW YELLOW (SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 4500.00, 450.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000163', '11111111-0000-0000-0000-000000000022', '4 INCH GOLDEN EYE (NAYAGARA)', '4-inch-golden-eye-nayagara-163', '163', 'High quality 4 INCH GOLDEN EYE (NAYAGARA) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 4500.00, 450.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000164', '11111111-0000-0000-0000-000000000022', '31/2 INCH FANCY V-STAR ORANGE (SINGLE)', '312-inch-fancy-v-star-orange-single-164', '164', 'High quality 31/2 INCH FANCY V-STAR ORANGE (SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 3800.00, 380.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000165', '11111111-0000-0000-0000-000000000022', '31/2 INCH V-STAR YELLOW CRUSH (SINGLE)', '312-inch-v-star-yellow-crush-single-165', '165', 'High quality 31/2 INCH V-STAR YELLOW CRUSH (SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 Pcs', 3800.00, 380.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000166', '11111111-0000-0000-0000-000000000022', '31/2 INCH V-STAR PINK (SINGLE)', '312-inch-v-star-pink-single-166', '166', 'High quality 31/2 INCH V-STAR PINK (SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 3800.00, 380.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000167', '11111111-0000-0000-0000-000000000022', '31/2 INCH V-STAR PURPLE(SINGLE)', '312-inch-v-star-purplesingle-167', '167', 'High quality 31/2 INCH V-STAR PURPLE(SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 3800.00, 380.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000168', '11111111-0000-0000-0000-000000000022', '31/2 INCH V-STAR SILVER CRACLING(SINGLE)', '312-inch-v-star-silver-craclingsingle-168', '168', 'High quality 31/2 INCH V-STAR SILVER CRACLING(SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 3800.00, 380.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000169', '11111111-0000-0000-0000-000000000022', '31/2 INCH V-STAR SIZZLING STAR (SINGLE)', '312-inch-v-star-sizzling-star-single-169', '169', 'High quality 31/2 INCH V-STAR SIZZLING STAR (SINGLE) from WOW STAR SPECIAL COLOUR FANCY category.', '1 PCS', 3800.00, 380.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000170', '11111111-0000-0000-0000-000000000023', '12 SHOT CRACKLING', '12-shot-crackling-170', '170', 'High quality 12 SHOT CRACKLING from AERIAL REPEATING SHOTS category.', '1 BOX', 1800.00, 180.00, NULL, true, false, true, 'Medium'),
+  ('22222222-0000-0000-0000-000000000171', '11111111-0000-0000-0000-000000000023', '25 SHOT CRACKLING RIDER', '25-shot-crackling-rider-171', '171', 'High quality 25 SHOT CRACKLING RIDER from AERIAL REPEATING SHOTS category.', '1 PCS', 2200.00, 220.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000172', '11111111-0000-0000-0000-000000000024', '15 SHOT MULTICOLOUR', '15-shot-multicolour-172', '172', 'High quality 15 SHOT MULTICOLOUR from FESTIVAL AERIAL SHOTS category.', '1 BOX', 2750.00, 275.00, NULL, true, true, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000173', '11111111-0000-0000-0000-000000000024', '30 SHOT MULTICOLOUR', '30-shot-multicolour-173', '173', 'High quality 30 SHOT MULTICOLOUR from FESTIVAL AERIAL SHOTS category.', '1 BOX', 2800.00, 280.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000174', '11111111-0000-0000-0000-000000000024', '30 SHOT MULTICOLOUR SPECIAL', '30-shot-multicolour-special-174', '174', 'High quality 30 SHOT MULTICOLOUR SPECIAL from FESTIVAL AERIAL SHOTS category.', '1 BOX', 3500.00, 350.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000175', '11111111-0000-0000-0000-000000000024', '30 SHOTS THANIGAIS BRAND SPECIAL', '30-shots-thanigais-brand-special-175', '175', 'High quality 30 SHOTS THANIGAIS BRAND SPECIAL from FESTIVAL AERIAL SHOTS category.', '1 BOX', 4500.00, 450.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000176', '11111111-0000-0000-0000-000000000024', '60 SHOTS MULTICOLOUR', '60-shots-multicolour-176', '176', 'High quality 60 SHOTS MULTICOLOUR from FESTIVAL AERIAL SHOTS category.', '1 BOX', 7000.00, 700.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000177', '11111111-0000-0000-0000-000000000024', '60 SHOTS SHREEMAN BRAND SPECIAL NOO', '60-shots-shreeman-brand-special-noo-177', '177', 'High quality 60 SHOTS SHREEMAN BRAND SPECIAL NOO from FESTIVAL AERIAL SHOTS category.', '1 BOX', 8000.00, 800.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000178', '11111111-0000-0000-0000-000000000024', '60 SHOTS THANIGAIS BRAND MULTICOLUR SPECIAL', '60-shots-thanigais-brand-multicolur-special-178', '178', 'High quality 60 SHOTS THANIGAIS BRAND MULTICOLUR SPECIAL from FESTIVAL AERIAL SHOTS category.', '1 BOX', 9000.00, 900.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000179', '11111111-0000-0000-0000-000000000024', '120 SHOT MULUTICOLOUR SPECIAL', '120-shot-muluticolour-special-179', '179', 'High quality 120 SHOT MULUTICOLOUR SPECIAL from FESTIVAL AERIAL SHOTS category.', '1 BOX', 18000.00, 1800.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000180', '11111111-0000-0000-0000-000000000024', '120 SHOTS SPECIAL', '120-shots-special-180', '180', 'High quality 120 SHOTS SPECIAL from FESTIVAL AERIAL SHOTS category.', '1 BOX', 16000.00, 1600.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000181', '11111111-0000-0000-0000-000000000024', '240 SHOTS MULTICOLOUR CRACKLING SPECIAL', '240-shots-multicolour-crackling-special-181', '181', 'High quality 240 SHOTS MULTICOLOUR CRACKLING SPECIAL from FESTIVAL AERIAL SHOTS category.', '1 BOX', 34000.00, 3400.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000182', '11111111-0000-0000-0000-000000000025', '7 SHOTS (5pis)', '7-shots-5pis-182', '182', 'High quality 7 SHOTS (5pis) from FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS) category.', '1 BOX', 950.00, 95.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000183', '11111111-0000-0000-0000-000000000025', 'PENTA MAGIC MULTICOLOUR (5pcs)', 'penta-magic-multicolour-5pcs-183', '183', 'High quality PENTA MAGIC MULTICOLOUR (5pcs) from FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS) category.', '1 BOX', 1450.00, 145.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000184', '11111111-0000-0000-0000-000000000025', '20-20 SPECIAL WHITE FULL CRACKLING', '20-20-special-white-full-crackling-184', '184', 'High quality 20-20 SPECIAL WHITE FULL CRACKLING from FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS) category.', '1 BOX', 5500.00, 550.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000185', '11111111-0000-0000-0000-000000000025', '5 X 10 CHELLAMS BRAND XLR 50 SHOTS MULTICOLOUR', '5-x-10-chellams-brand-xlr-50-shots-multicolour-185', '185', 'High quality 5 X 10 CHELLAMS BRAND XLR 50 SHOTS MULTICOLOUR from FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS) category.', '1 BOX', 23000.00, 2300.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000186', '11111111-0000-0000-0000-000000000025', '3INCH SETOUT BLUE STAR BRAND 30SHOTS MULTICOLOUR', '3inch-setout-blue-star-brand-30shots-multicolour-186', '186', 'High quality 3INCH SETOUT BLUE STAR BRAND 30SHOTS MULTICOLOUR from FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS) category.', '1 BOX', 59900.00, 5990.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000187', '11111111-0000-0000-0000-000000000025', '15 SMOKE SHOTS', '15-smoke-shots-187', '187', 'High quality 15 SMOKE SHOTS from FANTASTIC AERIAL SHOTS (SPECIAL EFFECTS) category.', '1 BOX', 4000.00, 400.00, NULL, true, false, false, 'Medium'),
+  ('22222222-0000-0000-0000-000000000188', '11111111-0000-0000-0000-000000000026', 'MURUGAN VEL -(2pcs)', 'murugan-vel-2pcs-188', '188', 'High quality MURUGAN VEL -(2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2400.00, 240.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000189', '11111111-0000-0000-0000-000000000026', 'AMMAN TRISULAM MULTICOLOUR -(2pcs)', 'amman-trisulam-multicolour-2pcs-189', '189', 'High quality AMMAN TRISULAM MULTICOLOUR -(2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2600.00, 260.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000190', '11111111-0000-0000-0000-000000000026', 'IPL BUS FOUNTAIN (2pcs)', 'ipl-bus-fountain-2pcs-190', '190', 'High quality IPL BUS FOUNTAIN (2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 1900.00, 190.00, NULL, true, false, true, 'Varies'),
+  ('22222222-0000-0000-0000-000000000191', '11111111-0000-0000-0000-000000000026', 'ULTRA VOLTAGE (2pcs)', 'ultra-voltage-2pcs-191', '191', 'High quality ULTRA VOLTAGE (2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2100.00, 210.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000192', '11111111-0000-0000-0000-000000000026', 'MOJITO (2pcs)', 'mojito-2pcs-192', '192', 'High quality MOJITO (2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2100.00, 210.00, NULL, true, true, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000193', '11111111-0000-0000-0000-000000000026', 'PRIDE POPCORN (2pcs)', 'pride-popcorn-2pcs-193', '193', 'High quality PRIDE POPCORN (2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2100.00, 210.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000194', '11111111-0000-0000-0000-000000000026', 'LOLLIPOPS(2pcs)', 'lollipops2pcs-194', '194', 'High quality LOLLIPOPS(2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2100.00, 210.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000195', '11111111-0000-0000-0000-000000000026', 'COCK FIGHT(2pcs)', 'cock-fight2pcs-195', '195', 'High quality COCK FIGHT(2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2100.00, 210.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000196', '11111111-0000-0000-0000-000000000026', 'BAT & BALL', 'bat-ball-196', '196', 'High quality BAT & BALL from NEW ARRIVAL-2026 category.', '1 PCS', 2500.00, 250.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000197', '11111111-0000-0000-0000-000000000026', 'LOVE DOSE (6 SHOTS) MULTICOLOUR', 'love-dose-6-shots-multicolour-197', '197', 'High quality LOVE DOSE (6 SHOTS) MULTICOLOUR from NEW ARRIVAL-2026 category.', '1 BOX', 1400.00, 140.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000198', '11111111-0000-0000-0000-000000000026', 'RACE CAR (2pcs)', 'race-car-2pcs-198', '198', 'High quality RACE CAR (2pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2500.00, 250.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000199', '11111111-0000-0000-0000-000000000026', 'KULFI (NEW) 3PCS CRACKLING', 'kulfi-new-3pcs-crackling-199', '199', 'High quality KULFI (NEW) 3PCS CRACKLING from NEW ARRIVAL-2026 category.', '1 BOX', 2800.00, 280.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000200', '11111111-0000-0000-0000-000000000026', 'PARASHOOT (IPCS)', 'parashoot-ipcs-200', '200', 'High quality PARASHOOT (IPCS) from NEW ARRIVAL-2026 category.', '1 PCS', 500.00, 50.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000201', '11111111-0000-0000-0000-000000000026', 'MONKEY STAR (NEW) CRACKLING(5pcs)', 'monkey-star-new-crackling5pcs-201', '201', 'High quality MONKEY STAR (NEW) CRACKLING(5pcs) from NEW ARRIVAL-2026 category.', '1 BOX', 2000.00, 200.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000202', '11111111-0000-0000-0000-000000000027', 'LAMBA MATCHES (10 PCS)', 'lamba-matches-10-pcs-202', '202', 'High quality LAMBA MATCHES (10 PCS) from COLOUR MATCHES /ROLL CAPS category.', '1 BOX', 1400.00, 140.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000203', '11111111-0000-0000-0000-000000000027', 'MAXX COLOUR MATCHES (10pcs) LAPTOP MODEL', 'maxx-colour-matches-10pcs-laptop-model-203', '203', 'High quality MAXX COLOUR MATCHES (10pcs) LAPTOP MODEL from COLOUR MATCHES /ROLL CAPS category.', '1 BOX', 1900.00, 190.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000204', '11111111-0000-0000-0000-000000000027', 'VIP 10 IN 1 (MEGA) 10PCS LAP TOP MODEL;', 'vip-10-in-1-mega-10pcs-lap-top-model-204', '204', 'High quality VIP 10 IN 1 (MEGA) 10PCS LAP TOP MODEL; from COLOUR MATCHES /ROLL CAPS category.', '1 BOX', 2400.00, 240.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000205', '11111111-0000-0000-0000-000000000027', 'SNAKE SERPENT BIG (10pcs)', 'snake-serpent-big-10pcs-205', '205', 'High quality SNAKE SERPENT BIG (10pcs) from COLOUR MATCHES /ROLL CAPS category.', '1 BOX', 300.00, 30.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000206', '11111111-0000-0000-0000-000000000027', 'ROLL WITH GUN', 'roll-with-gun-206', '206', 'High quality ROLL WITH GUN from COLOUR MATCHES /ROLL CAPS category.', '1 BOX', 1000.00, 100.00, NULL, true, false, false, 'Low'),
+  ('22222222-0000-0000-0000-000000000207', '11111111-0000-0000-0000-000000000028', '10PCS RING CAPE WITH GUN R19', '10pcs-ring-cape-with-gun-r19-207', '207', 'High quality 10PCS RING CAPE WITH GUN R19 from GIFT BOXES category.', '1 Pkt', 1500.00, 150.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000208', '11111111-0000-0000-0000-000000000028', '30 ITEMS PISTOL', '30-items-pistol-208', '208', 'High quality 30 ITEMS PISTOL from GIFT BOXES category.', '1 BOX', 5500.00, 550.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000209', '11111111-0000-0000-0000-000000000028', '36 ITEMS AVENGERS', '36-items-avengers-209', '209', 'High quality 36 ITEMS AVENGERS from GIFT BOXES category.', '1 BOX', 7300.00, 730.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000210', '11111111-0000-0000-0000-000000000028', '43 ITEMS LION KING', '43-items-lion-king-210', '210', 'High quality 43 ITEMS LION KING from GIFT BOXES category.', '1 BOX', 8000.00, 800.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000211', '11111111-0000-0000-0000-000000000028', '52 ITEM CHAMPIONS', '52-item-champions-211', '211', 'High quality 52 ITEM CHAMPIONS from GIFT BOXES category.', '1 BOX', 11500.00, 1150.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000212', '11111111-0000-0000-0000-000000000029', 'SILVER COMBO PACK', 'silver-combo-pack-212', '212', 'High quality SILVER COMBO PACK from FESTIVAL COMBO PACK (NET RATE-NO DISCOUNT) category.', '1 BOX', 30000.00, 3000.00, NULL, true, true, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000213', '11111111-0000-0000-0000-000000000029', 'GOLD COMBO PACK', 'gold-combo-pack-213', '213', 'High quality GOLD COMBO PACK from FESTIVAL COMBO PACK (NET RATE-NO DISCOUNT) category.', '1 BOX', 50000.00, 5000.00, NULL, true, false, false, 'Varies'),
+  ('22222222-0000-0000-0000-000000000214', '11111111-0000-0000-0000-000000000029', 'DIAMOND COMBO PACK', 'diamond-combo-pack-214', '214', 'High quality DIAMOND COMBO PACK from FESTIVAL COMBO PACK (NET RATE-NO DISCOUNT) category.', '1 BOX', 70000.00, 7000.00, NULL, true, false, true, 'Varies'),
+  ('22222222-0000-0000-0000-000000000215', '11111111-0000-0000-0000-000000000029', 'PLATINUM COMBO PACK', 'platinum-combo-pack-215', '215', 'High quality PLATINUM COMBO PACK from FESTIVAL COMBO PACK (NET RATE-NO DISCOUNT) category.', '1 BOX', 100000.00, 10000.00, NULL, true, false, true, 'Varies'),
+  ('22222222-0000-0000-0000-000000000216', '11111111-0000-0000-0000-000000000029', 'VIP COMBO PACK', 'vip-combo-pack-216', '216', 'High quality VIP COMBO PACK from FESTIVAL COMBO PACK (NET RATE-NO DISCOUNT) category.', '1 BOX', 150000.00, 15000.00, NULL, true, true, false, 'Varies');
+
+-- 10.6 SEED INITIAL WAREHOUSE INVENTORY BALANCES (FROM public/products.csv)
+INSERT INTO inventory (product_id, available_stock, reserved_stock, safety_threshold, updated_at) VALUES
+  ('22222222-0000-0000-0000-000000000001', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000002', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000003', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000004', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000005', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000006', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000007', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000008', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000009', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000010', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000011', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000012', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000013', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000014', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000015', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000016', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000017', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000018', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000019', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000020', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000021', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000022', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000023', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000024', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000025', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000026', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000027', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000028', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000029', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000030', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000031', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000032', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000033', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000034', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000035', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000036', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000037', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000038', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000039', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000040', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000041', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000042', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000043', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000044', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000045', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000070', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000046', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000047', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000048', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000049', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000050', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000051', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000052', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000053', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000054', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000055', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000056', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000057', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000058', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000059', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000060', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000061', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000062', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000063', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000064', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000065', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000066', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000067', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000068', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000069', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000071', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000072', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000073', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000074', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000075', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000076', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000077', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000078', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000079', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000080', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000081', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000099', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000082', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000083', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000084', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000085', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000086', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000087', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000088', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000089', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000090', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000091', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000092', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000093', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000094', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000095', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000096', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000097', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000098', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000100', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000101', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000102', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000103', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000104', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000105', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000106', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000107', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000108', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000109', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000110', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000111', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000112', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000113', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000114', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000115', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000116', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000117', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000118', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000119', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000120', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000121', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000122', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000123', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000124', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000125', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000126', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000127', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000128', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000129', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000130', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000131', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000132', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000133', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000134', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000135', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000136', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000137', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000138', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000139', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000140', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000141', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000142', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000143', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000144', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000145', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000146', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000147', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000148', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000149', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000150', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000151', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000152', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000153', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000154', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000155', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000156', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000157', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000158', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000159', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000160', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000161', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000162', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000163', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000164', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000165', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000166', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000167', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000168', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000169', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000170', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000171', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000172', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000173', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000174', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000175', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000176', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000177', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000178', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000179', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000180', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000181', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000182', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000183', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000184', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000185', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000186', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000187', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000188', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000189', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000190', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000191', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000192', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000193', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000194', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000195', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000196', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000197', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000198', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000199', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000200', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000201', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000202', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000203', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000204', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000205', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000206', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000207', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000208', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000209', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000210', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000211', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000212', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000213', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000214', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000215', 100, 0, 10, NOW()),
+  ('22222222-0000-0000-0000-000000000216', 100, 0, 10, NOW());
+
+-- 10.7 SEED FESTIVAL COMBOS & BUNDLES
+INSERT INTO combos (id, name, slug, description, price, mrp, image_url, is_active) VALUES
+  ('44444444-0000-0000-0000-000000000001', 'Diwali Family Grand Celebration Pack', 'diwali-family-grand-celebration-pack', 'Complete 25-variety Vasu Crackers celebration gift box with sparklers, flower pots, rockets, and aerial shots.', 3990.00, 39900.00, NULL, true),
+  ('44444444-0000-0000-0000-000000000002', 'Kids Safe & Joyful Sparkle Box', 'kids-safe-joyful-sparkle-box', 'Child-safe low noise gift box with colorful sparklers, ground chakkaras, flower pots, and novelty items.', 1890.00, 18900.00, NULL, true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO combo_items (combo_id, product_id, quantity) VALUES
+  ('44444444-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000001', 2),
+  ('44444444-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000010', 2),
+  ('44444444-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000039', 2),
+  ('44444444-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000048', 2),
+  ('44444444-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000084', 1),
+  ('44444444-0000-0000-0000-000000000002', '22222222-0000-0000-0000-000000000002', 2),
+  ('44444444-0000-0000-0000-000000000002', '22222222-0000-0000-0000-000000000040', 2),
+  ('44444444-0000-0000-0000-000000000002', '22222222-0000-0000-0000-000000000048', 2),
+  ('44444444-0000-0000-0000-000000000002', '22222222-0000-0000-0000-000000000057', 2),
+  ('44444444-0000-0000-0000-000000000002', '22222222-0000-0000-0000-000000000092', 5)
+ON CONFLICT DO NOTHING;
+
+-- 10.8 AUTOMATICALLY SYNCHRONIZE SELLING PRICES WITH GLOBAL STORE DISCOUNT
+CREATE OR REPLACE FUNCTION sync_product_prices_with_discount()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_discount NUMERIC;
+BEGIN
+  IF NEW.key = 'discount_percentage' THEN
+    v_discount := COALESCE(NULLIF(NEW.value, '')::NUMERIC, 90);
+    UPDATE products
+    SET 
+      selling_price = ROUND(mrp * ((100.0 - v_discount) / 100.0), 2),
+      updated_at = NOW()
+    WHERE mrp IS NOT NULL AND mrp > 0;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_discount_prices ON store_settings;
+CREATE TRIGGER trg_sync_discount_prices
+AFTER INSERT OR UPDATE OF value ON store_settings
+FOR EACH ROW
+WHEN (NEW.key = 'discount_percentage')
+EXECUTE FUNCTION sync_product_prices_with_discount();
+
+-- Immediate execution so seed products match configured discount percentage
+DO $$
+DECLARE
+  v_discount NUMERIC := 90;
+BEGIN
+  SELECT COALESCE(NULLIF(value, '')::NUMERIC, 90) INTO v_discount
+  FROM store_settings
+  WHERE key = 'discount_percentage'
+  LIMIT 1;
+
+  UPDATE products
+  SET 
+    selling_price = ROUND(mrp * ((100.0 - v_discount) / 100.0), 2),
+    updated_at = NOW()
+  WHERE mrp IS NOT NULL AND mrp > 0;
+END $$;
+
+-- ==============================================================================
+-- END OF COMPLETE DATABASE SETUP SCRIPT
+-- ==============================================================================

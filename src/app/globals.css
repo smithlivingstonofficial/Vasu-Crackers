@@ -1,0 +1,362 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Poppins:wght@500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-plus-jakarta), 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-heading: var(--font-poppins), 'Poppins', var(--font-plus-jakarta), sans-serif;
+}
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --primary: 38 92% 50%;
+    --primary-foreground: 26 83% 14%;
+    --flame-ruby: 347 77% 50%;
+    --flame-ruby-light: 347 90% 64%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --accent: 142 71% 45%;
+    --accent-foreground: 355.7 100% 97.3%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --radius: 0.75rem;
+  }
+
+  html,
+  body,
+  button,
+  input,
+  select,
+  textarea,
+  table,
+  th,
+  td,
+  span,
+  div,
+  p,
+  a,
+  label {
+    font-family: var(--font-plus-jakarta), 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  .font-heading {
+    font-family: var(--font-poppins), 'Poppins', var(--font-inter), sans-serif;
+    letter-spacing: -0.01em;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Glassmorphism utils */
+.glass-header {
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.glass-dark {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Subtle festive glow animations */
+@keyframes goldGlow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.35);
+  }
+
+  50% {
+    box-shadow: 0 0 28px rgba(245, 158, 11, 0.7);
+  }
+}
+
+@keyframes flameGlow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 14px rgba(225, 29, 72, 0.35);
+  }
+
+  50% {
+    box-shadow: 0 0 26px rgba(225, 29, 72, 0.65);
+  }
+}
+
+@keyframes pulseBorder {
+
+  0%,
+  100% {
+    border-color: rgba(245, 158, 11, 0.4);
+  }
+
+  50% {
+    border-color: rgba(245, 158, 11, 0.9);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.glow-gold {
+  animation: goldGlow 3s infinite ease-in-out;
+}
+
+.glow-flame {
+  animation: flameGlow 3s infinite ease-in-out;
+}
+
+.pulse-border {
+  animation: pulseBorder 2s infinite ease-in-out;
+}
+
+/* ==========================================================================
+   ✨ VASU CRACKERS SIGNATURE GRADIENTS & SHINE ANIMATIONS
+   ========================================================================== */
+
+/* 1. Perfect Matching Ratio Gradients (Logo Harmonized: Ruby Flame -> Fiery Coral -> Festive Gold) */
+.vasu-gradient-banner {
+  background: linear-gradient(115deg, #be123c 0%, #e11d48 24%, #ea580c 58%, #d97706 88%, #f59e0b 100%);
+}
+
+.vasu-gradient-ticker {
+  background: linear-gradient(90deg, #9f1239 0%, #be123c 22%, #e11d48 45%, #ea580c 70%, #d97706 100%);
+}
+
+.vasu-gradient-gold {
+  background: linear-gradient(135deg, #d97706 0%, #f59e0b 45%, #fbbf24 100%);
+}
+
+.vasu-gradient-flame {
+  background: linear-gradient(135deg, #be123c 0%, #e11d48 50%, #f43f5e 100%);
+}
+
+/* 2. Keyframes for Shine and Glow */
+@keyframes shineSweep {
+  0% {
+    transform: translateX(-160%) skewX(-20deg);
+    opacity: 0;
+  }
+
+  10% {
+    opacity: 1;
+  }
+
+  48% {
+    transform: translateX(260%) skewX(-20deg);
+    opacity: 1;
+  }
+
+  49%,
+  100% {
+    transform: translateX(260%) skewX(-20deg);
+    opacity: 0;
+  }
+}
+
+@keyframes shineFast {
+  0% {
+    transform: translateX(-160%) skewX(-20deg);
+    opacity: 0;
+  }
+
+  20% {
+    opacity: 1;
+  }
+
+  100% {
+    transform: translateX(260%) skewX(-20deg);
+    opacity: 0;
+  }
+}
+
+@keyframes gradientShift {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes sparkleSpin {
+  0% {
+    transform: rotate(0deg) scale(0.9);
+    filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.4));
+  }
+
+  50% {
+    transform: rotate(180deg) scale(1.15);
+    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.8));
+  }
+
+  100% {
+    transform: rotate(360deg) scale(0.9);
+    filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.4));
+  }
+}
+
+/* 3. Luxury Shine Utility Classes */
+.shine-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.shine-sweep::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.15) 25%,
+      rgba(255, 255, 255, 0.55) 50%,
+      rgba(255, 255, 255, 0.15) 75%,
+      rgba(255, 255, 255, 0) 100%);
+  transform: translateX(-160%) skewX(-20deg);
+  animation: shineSweep 4.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.shine-gold-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.shine-gold-sweep::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(254, 240, 138, 0.25) 20%,
+      rgba(255, 255, 255, 0.75) 50%,
+      rgba(254, 240, 138, 0.25) 80%,
+      rgba(255, 255, 255, 0) 100%);
+  transform: translateX(-160%) skewX(-20deg);
+  animation: shineSweep 3.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Card hover shine that triggers on interaction */
+.card-shine-hover {
+  position: relative;
+  overflow: hidden;
+}
+
+.card-shine-hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 65%;
+  height: 100%;
+  background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.35) 50%,
+      transparent 100%);
+  transform: translateX(-160%) skewX(-25deg);
+  transition: opacity 0.3s;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.card-shine-hover:hover::after {
+  opacity: 1;
+  animation: shineFast 0.85s ease-out;
+}
+
+.sparkle-icon {
+  animation: sparkleSpin 4s linear infinite;
+}
+
+.animate-gradient-shift {
+  background-size: 200% 200%;
+  animation: gradientShift 5s ease infinite;
+}
+
+.shimmer-mask {
+  position: relative;
+  overflow: hidden;
+}
+
+.shimmer-mask::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(90deg,
+      rgba(255, 255, 255, 0) 0,
+      rgba(255, 255, 255, 0.2) 20%,
+      rgba(255, 255, 255, 0.5) 60%,
+      rgba(255, 255, 255, 0));
+  animation: shimmer 2.5s infinite;
+}
+
+/* Hide horizontal scrollbar but keep scroll functionality */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
