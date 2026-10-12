@@ -135,7 +135,7 @@ export const QuickAddCard: React.FC<QuickAddCardProps> = ({ product, onQuickView
                 ₹{product.selling_price.toLocaleString('en-IN')}
               </span>
               {product.mrp > product.selling_price && (
-                <span className="text-[11px] text-slate-400 line-through font-mono">
+                <span className="text-[11px] text-red-600 line-through decoration-red-400 font-mono font-bold">
                   ₹{product.mrp.toLocaleString('en-IN')}
                 </span>
               )}

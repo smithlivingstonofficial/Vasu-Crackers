@@ -92,7 +92,7 @@ export const QuickAddListItem: React.FC<QuickAddListItemProps> = ({ product, onQ
             ₹{product.selling_price.toLocaleString()}
           </span>
           {product.mrp > product.selling_price && (
-            <span className="text-[10px] text-slate-400 line-through font-mono">
+            <span className="text-[10px] text-red-600 line-through decoration-red-400 font-mono font-bold">
               ₹{product.mrp.toLocaleString()}
             </span>
           )}

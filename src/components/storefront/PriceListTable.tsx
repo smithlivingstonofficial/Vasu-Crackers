@@ -277,8 +277,8 @@ export const PriceListTable: React.FC<PriceListTableProps> = ({
                           </span>
                         </td>
 
-                        {/* 3. MRP (Soft calm strikethrough matching cart) */}
-                        <td className="w-[48px] sm:w-[80px] py-2 px-1 sm:px-2 text-right border-r border-slate-200/50 font-mono text-xs sm:text-sm text-slate-400 line-through decoration-slate-300 font-medium align-middle whitespace-nowrap">
+                        {/* 3. MRP */}
+                        <td className="w-[48px] sm:w-[80px] py-2 px-1 sm:px-2 text-right border-r border-slate-200/50 font-mono text-xs sm:text-sm text-red-600 line-through decoration-red-400 font-bold align-middle whitespace-nowrap">
                           {formatPrice(product.mrp)}
                         </td>
 
