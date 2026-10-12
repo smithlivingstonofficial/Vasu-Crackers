@@ -261,13 +261,6 @@ export default function StorefrontPage() {
                   decoding="async"
                   className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.01]"
                 />
-                <div className="absolute bottom-2.5 right-2.5 sm:bottom-4 sm:right-4 z-10 flex items-center gap-2">
-                  <span className="px-3 py-1.5 sm:px-4 sm:py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] sm:text-xs rounded-xl shadow-md flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer">
-                    <Sparkles className="w-3.5 h-3.5 text-slate-950" />
-                    <span>Browse Price List</span>
-                    <ChevronRight className="w-3.5 h-3.5 stroke-[3]" />
-                  </span>
-                </div>
               </a>
             </div>
           )}

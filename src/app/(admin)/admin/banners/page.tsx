@@ -330,14 +330,6 @@ export default function AdminBannersPage() {
                 <span className="text-xs font-bold">No banner image uploaded</span>
               </div>
             )}
-
-            {/* Simulated overlay button badge */}
-            <div className="absolute bottom-2 right-2 sm:bottom-3 sm:right-3 pointer-events-none">
-              <span className="px-2 py-1 sm:px-3 sm:py-1.5 bg-amber-500 text-slate-950 font-black text-[9px] sm:text-xs rounded-lg shadow-md flex items-center gap-1">
-                <Sparkles className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-slate-950" />
-                <span>Browse Price List</span>
-              </span>
-            </div>
           </div>
         </div>
 
