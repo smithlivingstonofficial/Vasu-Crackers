@@ -106,8 +106,7 @@ export function PackingSlipModal({ order, onClose }: PackingSlipModalProps) {
       ? Math.round((totalDiscountAmount / totalCalculatedMrp) * 100)
       : 0;
 
-  const deliveryFee = order.delivery_fee || 0;
-  const grandTotal = finalItemsSubtotal + deliveryFee;
+  const grandTotal = finalItemsSubtotal;
 
   return createPortal(
     <div className="packing-slip-portal fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 print:static print:inset-auto print:z-auto print:bg-transparent print:p-0 print:m-0 print:block print:overflow-visible font-sans">
@@ -272,10 +271,10 @@ export function PackingSlipModal({ order, onClose }: PackingSlipModalProps) {
             ) : null}
           </div>
 
-          {/* Delivery To Customer */}
+          {/* Bill To Customer */}
           <div className="bg-slate-50 p-3.5 print:p-2.5 rounded-2xl print:rounded-xl border border-slate-300 space-y-1 print:bg-white print:border-slate-300">
             <span className="text-[10px] print:text-[8pt] font-black text-slate-500 uppercase tracking-wider block">
-              Ship &amp; Bill To Customer
+              Billed To Customer
             </span>
             <span className="font-black text-slate-950 text-sm print:text-[10.5pt] block">
               {order.customer_name}
@@ -288,16 +287,6 @@ export function PackingSlipModal({ order, onClose }: PackingSlipModalProps) {
             </div>
           </div>
         </div>
-
-        {/* Courier Info Banner */}
-        {order.courier_partner && (
-          <div className="bg-slate-100 text-slate-950 border border-slate-300 p-2.5 print:p-1.5 rounded-xl flex items-center justify-between gap-2 text-xs print:text-[9pt] print:bg-white print:border-slate-300 font-mono">
-            <span className="text-slate-600 font-bold">Courier &amp; Logistics:</span>
-            <span className="font-black text-slate-950 truncate">
-              {order.courier_partner} ({order.tracking_number || 'Pending'}) • Est: {order.estimated_delivery || '2-3 Days'}
-            </span>
-          </div>
-        )}
 
         {/* Itemized Table with MRP, Discount, and Total */}
         <div className="border border-slate-300 rounded-2xl overflow-x-auto scrollbar-none print:overflow-visible print:rounded-xl">
@@ -421,18 +410,6 @@ export function PackingSlipModal({ order, onClose }: PackingSlipModalProps) {
                   <span className="font-mono">-₹{totalDiscountAmount.toLocaleString('en-IN')}</span>
                 </div>
               ) : null}
-              <div className="flex justify-between pt-1 border-t border-slate-200">
-                <span>Total:</span>
-                <span className="font-mono text-slate-950 font-black">
-                  ₹{finalItemsSubtotal.toLocaleString('en-IN')}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Delivery Freight:</span>
-                <span className="font-mono text-slate-950 font-extrabold">
-                  {deliveryFee > 0 ? `₹${deliveryFee.toLocaleString('en-IN')}` : '₹0 (Nil / Direct)'}
-                </span>
-              </div>
               <div className="flex justify-between text-sm sm:text-base print:text-[11pt] font-black text-slate-950 pt-1.5 border-t-2 border-slate-950">
                 <span>Grand Total Payable:</span>
                 <span className="font-mono text-amber-700 print:text-black text-base print:text-[11.5pt] font-black">
